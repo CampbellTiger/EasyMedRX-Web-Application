@@ -1,0 +1,22 @@
+<h2>Prescription Schedule</h2>
+<a href="{% url 'calendar' %}">View Calendar</a>
+
+<ul>
+  {% for p in prescriptions %}
+    <li>
+      <strong>{{ p.medication_name }}</strong><br>
+      {{ p.dosage }} – {{ p.frequency }}<br>
+      {{ p.scheduled_time }}
+    </li>
+  {% endfor %}
+  {% if user.is_authenticated and user.is_staff %}
+      <a href="/admin/" class="btn btn-primary">Management Area</a>
+  {% endif %}
+  {% if user.is_authenticated %}
+      <span>Welcome, {{ user.username }}!</span>
+      <a href="{% url 'admin:logout' %}">Logout</a>
+  {% else %}
+      <a href="{% url 'admin:login' %}">Login</a>
+  {% endif %}
+
+</ul>

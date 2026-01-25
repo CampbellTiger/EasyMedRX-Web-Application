@@ -1,0 +1,15 @@
+<h2>Your Prescriptions</h2>
+
+<a href="{% url 'prescription_create' %}">Add Prescription</a>
+<ul>
+  {% for p in prescriptions %}
+    <li>
+      {{ p.medication_name }} —
+      {{ p.dosage }} —
+      {{ p.frequency }} —
+      {{ p.prescribing_doctor }}
+    </li>
+  {% empty %}
+    <li>No prescriptions available.</li>
+  {% endfor %}
+</ul>

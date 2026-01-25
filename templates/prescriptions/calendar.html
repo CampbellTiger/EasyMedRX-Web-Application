@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Prescription Calendar</title>
+
+    <!-- FullCalendar CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.11/index.global.min.css" rel="stylesheet">
+
+    <!-- FullCalendar JS -->
+    <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.11/index.global.min.js"></script>
+
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 40px;
+        }
+        #calendar {
+            max-width: 900px;
+            margin: auto;
+        }
+    </style>
+</head>
+<body>
+    <!-- Navigation Bar -->
+    <nav style="margin-bottom:20px;">
+        <a href="{% url 'calendar' %}" style="margin-right:10px;">Calendar</a>
+
+        {% if user.is_authenticated %}
+            {% if user.is_staff %}
+                <a href="/admin/" style="margin-right:10px;">Management Area</a>
+            {% endif %}
+            <span>Welcome, {{ user.username }}!</span>
+            <a href="{% url 'admin:logout' %}" style="margin-left:10px;">Logout</a>
+        {% else %}
+            <a href="{% url 'admin:login' %}" style="margin-left:10px;">Login</a>
+        {% endif %}
+    </nav>
+
+    <h2>Prescription Schedule</h2>
+    <div id="calendar"></div>
+
+    <!-- FullCalendar JS included as before -->
+    <script>
+    document.addEventListener("DOMContentLoaded", function () {
+        var calendarEl = document.getElementById("calendar");
+
+        var calendar = new FullCalendar.Calendar(calendarEl, {
+            initialView: "dayGridMonth",
+            height: "auto",
+            events: "{% url 'prescription_events' %}",
+            eventClick: function(info) {
+                alert(
+                    info.event.title + "\n" +
+                    info.event.extendedProps.description + "\n" +
+                    info.event.start.toLocaleString()
+                );
+            }
+        });
+
+        calendar.render();
+    });
+    </script>
+</body>
+</html>
