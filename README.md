@@ -18,3 +18,5 @@ Then type code
 "py manage.py migrate"
 
 Afterwards, you can use the runserver command again.
+
+To access the page, it will display an IP address after running the server. Just open that link in any browser. 
