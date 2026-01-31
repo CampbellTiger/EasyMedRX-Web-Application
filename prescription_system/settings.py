@@ -1,4 +1,5 @@
 from pathlib import Path
+import sys
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -13,7 +14,13 @@ SECRET_KEY = 'django-insecure-)0=h#fwxncnmiksz$6-+3cl@i6y@s2sagufk9hu@^6b%i-@e0$
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+#allows other computers to access the code
+from .ip_address import get_ip_address
+
+ALLOWED_HOSTS = [get_ip_address()]
+CSRF_TRUSTED_ORIGINS = [f"http://{get_ip_address()}"]
+
+sys.stdout.write(f"http://{get_ip_address()}\n") #get ip address from command line
 
 
 # Application definition
