@@ -1,0 +1,14 @@
+"./add_func.o"
+"./syscfg/ti_drivers_config.o"
+"./syscfg/ti_net_config.o"
+"./syscfg/ti_sysbios_config.o"
+"./syscfg/ti_drivers_net_wifi_config.o"
+"./drive_gpio.o"
+"./httpget.o"
+"./httpsget.o"
+"./main_tirtos.o"
+"./platform.o"
+"../cc32xxs_tirtos7.cmd"
+-lti_utils_build_linker.cmd.genlibs
+-l"ti/devices/cc32xx/driverlib/ticlang/Release/driverlib.a"
+-llibc.a
