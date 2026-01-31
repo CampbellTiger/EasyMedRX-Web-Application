@@ -17,8 +17,8 @@ DEBUG = True
 #allows other computers to access the code
 from .ip_address import get_ip_address
 
-ALLOWED_HOSTS = [get_ip_address()]
-CSRF_TRUSTED_ORIGINS = [f"http://{get_ip_address()}"]
+ALLOWED_HOSTS = ["127.0.0.1",get_ip_address()]
+CSRF_TRUSTED_ORIGINS = ['http://127.0.0.1:8000', f"http://{get_ip_address()}"]
 
 sys.stdout.write(f"http://{get_ip_address()}\n") #get ip address from command line
 
@@ -117,4 +117,4 @@ STATIC_URL = 'static/'
 
 LOGIN_URL = '/admin/login/'
 LOGIN_REDIRECT_URL = '/prescriptions/'
-LOGOUT_REDIRECT_URL = 'logout/'
+LOGOUT_REDIRECT_URL = '/admin/login/'
