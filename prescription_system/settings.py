@@ -110,4 +110,4 @@ STATIC_URL = 'static/'
 
 LOGIN_URL = '/admin/login/'
 LOGIN_REDIRECT_URL = '/prescriptions/'
-LOGOUT_REDIRECT_URL = '/admin/login/'
+LOGOUT_REDIRECT_URL = 'logout/'
