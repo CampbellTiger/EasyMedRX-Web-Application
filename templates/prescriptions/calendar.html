@@ -50,9 +50,12 @@
             events: "{% url 'prescription_events' %}",
             eventClick: function(info) {
                 alert(
-                    info.event.title + "\n" +
-                    info.event.extendedProps.description + "\n" +
-                    info.event.start.toLocaleString()
+                    info.event.title + "\n" + 
+                    info.event.extendedProps.user + '\n' +
+                    info.event.extendedProps.instructions + '\n' +
+                    info.event.start.toLocaleDateString() + ' to ' +
+                    info.event.end.toLocaleDateString() + '\n' + 
+                    info.event.extendedProps.time
                 );
             }
         });

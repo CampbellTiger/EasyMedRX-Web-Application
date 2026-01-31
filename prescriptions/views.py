@@ -14,9 +14,12 @@ def prescription_events(request):
     for prescription in prescriptions:
         events.append({
             'title': prescription.medication_name,
-            'start': prescription.scheduled_time.isoformat(),
-            'end': prescription.scheduled_time.isoformat(),
-            'allDay': False,
+            'instructions': prescription.instructions,
+            'user': f'{prescription.user.first_name} {prescription.user.last_name}',
+            'start': prescription.start_date.isoformat(),
+            'end': prescription.end_date.isoformat(),
+            'time': prescription.scheduled_time.time(),
+            'allDay': True,
            
         })
     return JsonResponse(events, safe=False)
