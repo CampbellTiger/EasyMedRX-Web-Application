@@ -8,9 +8,26 @@ from datetime import date
 from django.utils.timezone import now
 from django.http import JsonResponse
 
+COLOR_PALETTE = [
+    "#1E90FF",  # blue
+    "#28a745",  # green
+    "#FFC107",  # yellow
+    "#FF5733",  # orange-red
+    "#6f42c1",  # purple
+    "#fd7e14",  # orange
+]
+
 def prescription_events(request):
     prescriptions = Prescription.objects.all()
     events = []
+
+    unique_users = list({p.user.id: p.user for p in prescriptions}.values())
+
+    # Map each user ID to a color
+    user_colors = {}
+    for i, user in enumerate(unique_users):
+        user_colors[user.id] = COLOR_PALETTE[i % len(COLOR_PALETTE)]  # cycle colors if more users than colors
+
     for prescription in prescriptions:
         events.append({
             'title': prescription.medication_name,
@@ -20,6 +37,7 @@ def prescription_events(request):
             'end': prescription.end_date.isoformat(),
             'time': prescription.scheduled_time.time(),
             'allDay': True,
+            'color': user_colors[prescription.user.id],
            
         })
     return JsonResponse(events, safe=False)
