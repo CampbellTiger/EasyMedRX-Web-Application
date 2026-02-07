@@ -18,3 +18,8 @@ class Prescription(models.Model):
     scheduled_time = models.DateTimeField(default=timezone.now)
     def __str__(self):
         return f"{self.medication_name} ({self.user.username})"
+
+class Device(models.Model):
+    device_id = models.CharField(max_length=64, unique=True)
+    last_seen = models.DateTimeField(auto_now=True) #sets the currrent date and time
+    patient = models.ForeignKey(User, on_delete=models.CASCADE)

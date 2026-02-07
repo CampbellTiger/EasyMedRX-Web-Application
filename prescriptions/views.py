@@ -8,6 +8,13 @@ from datetime import date
 from django.utils.timezone import now
 from django.http import JsonResponse
 
+#rest framework
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+from rest_framework import status
+from .models import Device
+from .serializers import DeviceSerializer
+
 COLOR_PALETTE = [
     "#1E90FF",  # blue
     "#28a745",  # green
@@ -16,6 +23,33 @@ COLOR_PALETTE = [
     "#6f42c1",  # purple
     "#fd7e14",  # orange
 ]
+
+@api_view(['GET'])
+def prescription_get(request):
+    device_id = request.query_params.get('device_id')
+
+    if not device_id:
+        return Response({'error': "device_id required"}, status=800)
+
+    try:
+        device = Device.objects.select_related("user").get(device_id=device_id)
+    except Device.DoesNotExist:
+        return Response({"error": "unknown device"}, status=404)
+    
+    prescription = (
+        Prescription.objects
+        .filter(user=device.user, active=True)
+        .first()
+    )
+
+    if not prescription:
+        return Response({'command':'NO_PRESCRIPTION'}, status=200)
+
+    return Response({
+        "user_id": device.user.user_id,
+        "pill": prescription.medication_name,
+        "dosage": prescription.dosage,
+    })
 
 def prescription_events(request):
     prescriptions = Prescription.objects.all()
