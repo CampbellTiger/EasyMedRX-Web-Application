@@ -1,6 +1,5 @@
-from django.contrib.auth.decorators import login_required
 from django.contrib.admin.views.decorators import staff_member_required
-from django.shortcuts import render, redirect, get_object_or_404
+from django.shortcuts import render, redirect
 from .models import Prescription
 from .forms import PrescriptionForm
 import calendar
@@ -11,9 +10,7 @@ from django.http import JsonResponse
 #rest framework
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
-from rest_framework import status
 from .models import Device
-from .serializers import DeviceSerializer
 
 COLOR_PALETTE = [
     "#1E90FF",  # blue
@@ -24,12 +21,12 @@ COLOR_PALETTE = [
     "#fd7e14",  # orange
 ]
 
-@api_view(['GET'])
+@api_view(['POST'])  #HTTP connection code
 def prescription_get(request):
-    device_id = request.query_params.get('device_id')
+    device_id = request.data.get('device_id') #requests the device id
 
     if not device_id:
-        return Response({'error': "device_id required"}, status=800)
+        return Response({'error': "device_id required"}, status=400)
 
     try:
         device = Device.objects.select_related("user").get(device_id=device_id)
@@ -49,9 +46,9 @@ def prescription_get(request):
         "user_id": device.user.user_id,
         "pill": prescription.medication_name,
         "dosage": prescription.dosage,
-    })
+    }, status=200)
 
-def prescription_events(request):
+def prescription_events(): #request in paranetheses deleted
     prescriptions = Prescription.objects.all()
     events = []
 
