@@ -1,2 +1,3 @@
-2026/02/07-06:48:16.196 a5c Creating DB C:\Users\campe\OneDrive\Desktop\EasyMedRX\EasyMedRX-Web-Application\.jxbrowser.userdata\Default\Local Storage\leveldb since it was missing.
-2026/02/07-06:48:16.250 a5c Reusing MANIFEST C:\Users\campe\OneDrive\Desktop\EasyMedRX\EasyMedRX-Web-Application\.jxbrowser.userdata\Default\Local Storage\leveldb/MANIFEST-000001
+2026/02/20-15:23:22.713 6e50 Reusing MANIFEST C:\Users\campe\OneDrive\Desktop\EasyMedRX\EasyMedRX-Web-Application\.jxbrowser.userdata\Default\Local Storage\leveldb/MANIFEST-000001
+2026/02/20-15:23:22.713 6e50 Recovering log #3
+2026/02/20-15:23:22.714 6e50 Reusing old log C:\Users\campe\OneDrive\Desktop\EasyMedRX\EasyMedRX-Web-Application\.jxbrowser.userdata\Default\Local Storage\leveldb/000003.log 

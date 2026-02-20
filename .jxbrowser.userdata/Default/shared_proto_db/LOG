@@ -1,2 +1,3 @@
-2026/02/07-06:48:16.106 2724 Creating DB C:\Users\campe\OneDrive\Desktop\EasyMedRX\EasyMedRX-Web-Application\.jxbrowser.userdata\Default\shared_proto_db since it was missing.
-2026/02/07-06:48:16.176 2724 Reusing MANIFEST C:\Users\campe\OneDrive\Desktop\EasyMedRX\EasyMedRX-Web-Application\.jxbrowser.userdata\Default\shared_proto_db/MANIFEST-000001
+2026/02/20-15:23:22.648 6018 Reusing MANIFEST C:\Users\campe\OneDrive\Desktop\EasyMedRX\EasyMedRX-Web-Application\.jxbrowser.userdata\Default\shared_proto_db/MANIFEST-000001
+2026/02/20-15:23:22.655 6018 Recovering log #3
+2026/02/20-15:23:22.656 6018 Reusing old log C:\Users\campe\OneDrive\Desktop\EasyMedRX\EasyMedRX-Web-Application\.jxbrowser.userdata\Default\shared_proto_db/000003.log 
