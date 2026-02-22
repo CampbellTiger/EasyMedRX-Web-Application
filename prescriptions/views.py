@@ -12,6 +12,26 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from .models import Device
 
+from django.shortcuts import get_object_or_404
+from channels.layers import get_channel_layer
+from asgiref.sync import async_to_sync
+
+
+def prescription_ready_view(request, prescription_id):
+    prescription = get_object_or_404(Prescription, id=prescription_id)
+    
+    # Send WebSocket notification
+    channel_layer = get_channel_layer()
+    if not channel_layer:
+        print("Channel layer is None!")
+        return
+    async_to_sync(channel_layer.group_send)(
+        "notifications",
+        {"type": "send_notification", "message": f"Prescription {prescription.medication_name} is ready!"}
+    )
+    
+    return JsonResponse({"status": "notification sent", "id": prescription.id})
+
 COLOR_PALETTE = [
     "#1E90FF",  # blue
     "#28a745",  # green
@@ -48,7 +68,7 @@ def prescription_get(request):
         "dosage": prescription.dosage,
     }, status=200)
 
-def prescription_events(): #request in paranetheses deleted
+def prescription_events(request): #request in paranetheses deleted
     prescriptions = Prescription.objects.all()
     events = []
 

@@ -17,13 +17,20 @@ DEBUG = True
 #allows other computers to access the code
 from .ip_address import get_ip_address
 
-ALLOWED_HOSTS = ["127.0.0.1",get_ip_address()]
+ALLOWED_HOSTS = ["127.0.0.1",get_ip_address(), 'localhost']
 CSRF_TRUSTED_ORIGINS = ['http://127.0.0.1:8000', f"http://{get_ip_address()}"]
 
 sys.stdout.write(f"http://{get_ip_address()}\n") #get ip address from command line
 
 
 # Application definition
+
+#Celery
+CELERY_BROKER_URL = 'redis://127.0.0.1:6379/0'
+CELERY_RESULT_BACKEND = 'redis://127.0.0.1:6379/0'
+CELERY_ACCEPT_CONTENT = ['json']
+CELERY_TASK_SERIALIZER = 'json'
+CELERY_RESULT_SERIALIZER = 'json'
 
 INSTALLED_APPS = [
     'django.contrib.admin',
@@ -34,7 +41,27 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'prescriptions',
     'rest_framework',
+    'channels',
 ]
+
+
+ASGI_APPLICATION = "prescription_system.asgi.application"
+
+# CHANNEL_LAYERS = {
+#     "default": {
+#         "BACKEND": "channels.layers.InMemoryChannelLayer",
+#     },
+# }
+#For production, switch to Redis channel layer:
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": "channels_redis.core.RedisChannelLayer",
+        "CONFIG": {
+            "hosts": [("127.0.0.1", 6379)],
+        },
+    },
+}
+
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',

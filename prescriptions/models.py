@@ -16,6 +16,8 @@ class Prescription(models.Model):
     start_date = models.DateField()
     end_date = models.DateField(blank=True, null=True)
     scheduled_time = models.DateTimeField(default=timezone.now)
+    ready = models.BooleanField(default=False)
+    last_notified = models.DateTimeField(blank=True, null=True)
     def __str__(self):
         return f"{self.medication_name} ({self.user.username})"
 
