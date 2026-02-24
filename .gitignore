@@ -1,3 +1,23 @@
-/.metadata/
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environment
 venv/
-celerybeat-schedule
+env/
+ENV/
+
+# Django
+*.sqlite3
+*.log
+media/
+staticfiles/
+
+# VS Code
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
