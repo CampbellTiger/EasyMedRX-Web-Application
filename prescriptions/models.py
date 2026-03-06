@@ -25,3 +25,29 @@ class Device(models.Model):
     device_id = models.CharField(max_length=64, unique=True)
     patient = models.ForeignKey(User, on_delete=models.CASCADE)
     #RFID = models.CharField(max_length=64, unique=True)
+
+#MODEL FOR LOGGING DATA FOR MISSES AND GRABBED PRECRIPTIONS
+class PrescriptionLogging(models.Model):
+    EVENT_TYPES = [
+        ("REMINDER_SENT", "Reminder Sent"),
+        ("TAKEN", 'Taken'),
+        ("MISSED", "Missed")
+    ]
+
+    prescription = models.ForeignKey(
+        "Prescription", 
+        on_delete=models.CASCADE, 
+        related_name="logs"  # Reverse: prescription.logs.all()
+    )
+    user = models.ForeignKey(
+        User, 
+        on_delete=models.CASCADE, 
+        related_name="prescription_logs"  # Reverse: user.prescription_logs.all()
+    )
+
+    event_type = models.CharField(max_length=20, choices=EVENT_TYPES)
+    scheduled_time = models.DateTimeField()  # When it was supposed to be taken
+    event_time = models.DateTimeField(auto_now_add=True)  # When the log was recorded
+
+    def __str__(self):
+        return f"{self.event_type} - {self.prescription.medication_name} ({self.user.username})"

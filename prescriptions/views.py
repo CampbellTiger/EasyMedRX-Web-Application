@@ -62,12 +62,23 @@ def prescription_get(request):
     if not prescription:
         return Response({'command':'NO_PRESCRIPTION'}, status=200)
 
+    prescription_id = request.data.get("prescription_id")
+    prescription = get_object_or_404(Prescription, id=prescription_id)
+
+    PrescriptionLogging.objects.create(
+        user_logs=prescription.user,
+        prescription_logs=prescription,
+        event_type="TAKEN",
+        scheduled_time_logs=prescription.scheduled_time
+    )
+
     return Response({
         "user_id": device.user.user_id,
         "pill": prescription.medication_name,
         "dosage": prescription.dosage,
     }, status=200)
 
+#This gives the calendar information to show
 def prescription_events(request): #request in paranetheses deleted
     prescriptions = Prescription.objects.all()
     events = []
