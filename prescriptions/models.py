@@ -24,7 +24,6 @@ class Prescription(models.Model):
 class Device(models.Model):
     device_id = models.CharField(max_length=64, unique=True)
     patient = models.ForeignKey(User, on_delete=models.CASCADE)
-    #RFID = models.CharField(max_length=64, unique=True)
 
 #MODEL FOR LOGGING DATA FOR MISSES AND GRABBED PRECRIPTIONS
 class PrescriptionLogging(models.Model):

@@ -111,12 +111,12 @@ DATABASES = {
 #Email setup
 EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
 
-EMAIL_HOST = #add these later. DO NOT COMMIT WITH THESE
-EMAIL_PORT = 
+EMAIL_HOST = "stmp.gmail.com"  #add these later. DO NOT COMMIT WITH THESE
+EMAIL_PORT = 587
 EMAIL_USE_TLS = True
 
-EMAIL_HOST_USER = 
-EMAIL_HOST_PASSWORD = 
+EMAIL_HOST_USER = "easymedrx419@gmail.com"
+EMAIL_HOST_PASSWORD =  "vugvu687#8"
 
 DEFAULT_FROM_EMAIL = "EasyMedRX  easymedrx419@gmail.com"
 
