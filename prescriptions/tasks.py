@@ -4,6 +4,7 @@ from asgiref.sync import async_to_sync
 from django.utils import timezone
 from .models import Prescription
 from .models import PrescriptionLogging
+from django.core.mail import send_mail
 
 @shared_task
 def send_due_prescription_notifications():
@@ -15,7 +16,8 @@ def send_due_prescription_notifications():
     channel_layer = get_channel_layer()
 
     for p in due_prescriptions:
-
+        p.ready = True
+        p.save()
         async_to_sync(channel_layer.group_send)(
             "notifications",
             {
@@ -29,5 +31,11 @@ def send_due_prescription_notifications():
             event_type_logs="REMINDER_SENT",
             scheduled_time_logs=p.scheduled_time
         )
-        p.ready = True
-        p.save()
+        #email
+        send_mail(
+            subject="Medication Reminder",
+            message=f"Time to take {p.medication_name}.",
+            from_email=None,
+            recipient_list=[p.user.email],
+            fail_silently=False,
+        )
