@@ -16,13 +16,29 @@ SECRET_KEY = 'django-insecure-)0=h#fwxncnmiksz$6-+3cl@i6y@s2sagufk9hu@^6b%i-@e0$
 DEBUG = True
 
 #allows other computers to access the code
-from .ip_address import get_ip_address
+# from .ip_address import get_ip_address
 
-ALLOWED_HOSTS = ["127.0.0.1",get_ip_address(), 'localhost']
-CSRF_TRUSTED_ORIGINS = ['http://127.0.0.1:8000', f"http://{get_ip_address()}"]
+# ALLOWED_HOSTS = ["127.0.0.1",get_ip_address(), 'localhost']
+# CSRF_TRUSTED_ORIGINS = ['http://127.0.0.1:8000', f"http://{get_ip_address()}"]
 
-sys.stdout.write(f"http://{get_ip_address()}\n") #get ip address from command line
+# sys.stdout.write(f"http://{get_ip_address()}\n") #get ip address from command line
 
+#dynamic allow host update. Allows use on any network
+import socket
+
+def get_ip_address():
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect("8.8.8.8",80)
+        return s.getsockname()[0]
+    except Exception:
+        return "127.0.0.1"
+    finally:
+        s.close()
+LOCAL_IP = get_ip_address()
+
+ALLOWED_HOSTS = ["127.0.0.1", LOCAL_IP, 'localhost', 'easymedrx.local']
+CSRF_TRUSTED_ORIGINS = ['http://127.0.0.1:8000', f"http://{LOCAL_IP}:8000", 'http://easymedrx.local:8000']
 
 # Application definition
 

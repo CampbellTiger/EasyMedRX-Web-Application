@@ -2,6 +2,12 @@
 import subprocess
 import os
 import time
+import glob
+
+# Clean all variants of the schedule file
+for f in glob.glob("celerybeat-schedule*"):
+    os.remove(f)
+    print(f"Removed {f}")
 
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 os.chdir(PROJECT_DIR)

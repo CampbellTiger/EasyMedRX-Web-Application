@@ -26,10 +26,10 @@ def send_due_prescription_notifications():
             }
         )
         PrescriptionLogging.objects.create(
-            user_Logs=p.user,
-            prescriptions_logs=p,
-            event_type_logs="REMINDER_SENT",
-            scheduled_time_logs=p.scheduled_time
+            user=p.user,
+            prescriptions=p,
+            event_type="REMINDER_SENT",
+            scheduled_time=p.scheduled_time
         )
         #email
         send_mail(
