@@ -25,6 +25,9 @@ class Device(models.Model):
     device_id = models.CharField(max_length=64, unique=True)
     patient = models.ForeignKey(User, on_delete=models.CASCADE)
 
+    def __str__(self):
+        return f"{self.device_id} ({self.patient.username})"
+
 #MODEL FOR LOGGING DATA FOR MISSES AND GRABBED PRECRIPTIONS
 class PrescriptionLogging(models.Model):
     EVENT_TYPES = [

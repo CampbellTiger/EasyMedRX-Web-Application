@@ -1,4 +1,5 @@
 from django.contrib.admin.views.decorators import staff_member_required
+from django.contrib.auth.decorators import login_required
 from django.contrib.auth.models import User
 from django.shortcuts import render, redirect
 from .models import Prescription, Device, ErrorLog, PrescriptionLogging
@@ -14,24 +15,13 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 
 from django.shortcuts import get_object_or_404
-from channels.layers import get_channel_layer
-from asgiref.sync import async_to_sync
-
 from .consumers import notify_user
 
 
+@login_required
 def prescription_ready_view(request, prescription_id):
     prescription = get_object_or_404(Prescription, id=prescription_id)
-
-    channel_layer = get_channel_layer()
-    if not channel_layer:
-        print("Channel layer is None!")
-        return JsonResponse({"error": "channel layer unavailable"}, status=503)
-    async_to_sync(channel_layer.group_send)(
-        "notifications",
-        {"type": "send_notification", "message": f"Prescription {prescription.medication_name} is ready!"}
-    )
-
+    notify_user(prescription.user_id, f"Prescription {prescription.medication_name} is ready!")
     return JsonResponse({"status": "notification sent", "id": prescription.id})
 
 COLOR_PALETTE = [
@@ -210,17 +200,15 @@ def prescription_get(request):
         "dosage": prescription.dosage,
     }, status=200)
 
-#This gives the calendar information to show
-def prescription_events(request): #request in paranetheses deleted
-    prescriptions = Prescription.objects.all()
+def prescription_events(request):
+    prescriptions = Prescription.objects.select_related('user').all()
     events = []
 
     unique_users = list({p.user.id: p.user for p in prescriptions}.values())
 
-    # Map each user ID to a color
     user_colors = {}
     for i, user in enumerate(unique_users):
-        user_colors[user.id] = COLOR_PALETTE[i % len(COLOR_PALETTE)]  # cycle colors if more users than colors
+        user_colors[user.id] = COLOR_PALETTE[i % len(COLOR_PALETTE)]
 
     for prescription in prescriptions:
         events.append({
@@ -228,11 +216,10 @@ def prescription_events(request): #request in paranetheses deleted
             'instructions': prescription.instructions,
             'user': f'{prescription.user.first_name} {prescription.user.last_name}',
             'start': prescription.start_date.isoformat(),
-            'end': prescription.end_date.isoformat(),
-            'time': prescription.scheduled_time.time(),
+            'end': prescription.end_date.isoformat() if prescription.end_date else None,
+            'time': prescription.scheduled_time.strftime('%H:%M'),
             'allDay': True,
             'color': user_colors[prescription.user.id],
-           
         })
     return JsonResponse(events, safe=False)
 
@@ -258,6 +245,7 @@ def prescription_calendar(request):
         'year': year,
     })
 
+@login_required
 def public_prescription_list(request):
     prescriptions = Prescription.objects.all().order_by('scheduled_time')
     return render(request, 'prescriptions/public_list.html', {

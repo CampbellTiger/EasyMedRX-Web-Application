@@ -1,6 +1,4 @@
 from celery import shared_task
-from channels.layers import get_channel_layer
-from asgiref.sync import async_to_sync
 from django.utils import timezone
 from django.core.mail import send_mail
 from django.conf import settings
@@ -17,10 +15,9 @@ def send_due_prescription_notifications():
         scheduled_time__minute=now.minute,
         ready=False,
     )
-    channel_layer = get_channel_layer()
-
     for p in due_prescriptions:
         p.ready = True
+        p.last_notified = now
         p.save()
 
         # WebSocket notification — targeted to this user only
