@@ -84,6 +84,7 @@ MIDDLEWARE = [
 ]
 
 ROOT_URLCONF = 'prescription_system.urls'
+APPEND_SLASH = False
 
 TEMPLATES = [
     {

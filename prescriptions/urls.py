@@ -7,5 +7,6 @@ urlpatterns = [
     path('api/events/', views.prescription_events, name='prescription_events'),
     path('logout/', LogoutView.as_view(next_page='/'), name='logout'),
     path('api/device/push/', views.device_push, name='device_push'),
+    path('api/device/push', views.device_push),
     path('ready/<int:prescription_id>/', views.prescription_ready_view, name='prescription_ready'),
 ]
