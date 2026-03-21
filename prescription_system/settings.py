@@ -22,22 +22,15 @@ DEBUG = True
 
 # sys.stdout.write(f"http://{get_ip_address()}\n") #get ip address from command line
 
-#dynamic allow host update. Allows use on any network
-import socket
+# Static LAN IP of the Windows host
+LOCAL_IP = '10.102.253.90'
 
-def get_ip_address():
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        return s.getsockname()[0]
-    except Exception:
-        return "127.0.0.1"
-    finally:
-        s.close()
-LOCAL_IP = get_ip_address()
-
-ALLOWED_HOSTS = ["127.0.0.1", LOCAL_IP, 'localhost', 'easymedrx.local']
-CSRF_TRUSTED_ORIGINS = ['http://127.0.0.1:8000', f"http://{LOCAL_IP}:8000", 'http://easymedrx.local:8000']
+ALLOWED_HOSTS = ['127.0.0.1', 'localhost', LOCAL_IP, 'easymedrx.local']
+CSRF_TRUSTED_ORIGINS = [
+    'http://127.0.0.1:8000',
+    f'http://{LOCAL_IP}:8000',
+    'http://easymedrx.local:8000',
+]
 
 # Application definition
 

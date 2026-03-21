@@ -15,23 +15,8 @@ def get_wsl_ip():
         return '127.0.0.1'
 
 
-def get_windows_lan_ip():
-    """Return the Windows host LAN IP via PowerShell (excludes loopback and WSL adapters)."""
-    try:
-        ps_cmd = (
-            "Get-NetIPAddress -AddressFamily IPv4 "
-            "| Where-Object { $_.InterfaceAlias -notlike '*Loopback*' -and $_.InterfaceAlias -notlike '*WSL*' } "
-            "| Sort-Object PrefixLength "
-            "| Select-Object -First 1 -ExpandProperty IPAddress"
-        )
-        result = subprocess.run(
-            ['powershell.exe', '-NoProfile', '-Command', ps_cmd],
-            capture_output=True, text=True
-        )
-        ip = result.stdout.strip()
-        return ip if ip else None
-    except Exception:
-        return None
+# Static LAN IP — update this if the Windows host IP changes
+WINDOWS_IP = '10.102.253.90'
 
 
 def setup_port_proxy(wsl_ip):
@@ -119,8 +104,7 @@ for f in ["celerybeat-schedule", "celerybeat-schedule.db"]:
 # ── LAN / WSL network setup ───────────────────────────────────────────────────
 
 print("\nConfiguring LAN access...")
-wsl_ip     = get_wsl_ip()
-windows_ip = get_windows_lan_ip()
+wsl_ip = get_wsl_ip()
 
 setup_port_proxy(wsl_ip)
 ensure_firewall_rule()
@@ -128,8 +112,7 @@ update_windows_hosts()
 
 print("\n  Access URLs:")
 print(f"    Local  →  http://easymedrx.local:8000")
-if windows_ip:
-    print(f"    LAN    →  http://{windows_ip}:8000")
+print(f"    LAN    →  http://{WINDOWS_IP}:8000")
 print()
 
 
