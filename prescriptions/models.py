@@ -50,3 +50,19 @@ class PrescriptionLogging(models.Model):
 
     def __str__(self):
         return f"{self.event_type} - {self.prescription.medication_name} ({self.user.username})"
+
+class ErrorLog(models.Model):
+    device_id  = models.CharField(max_length=255)
+    error_type = models.CharField(max_length=100)
+    detail     = models.TextField()
+    timestamp  = models.DateTimeField(auto_now_add=True)
+    user       = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='error_logs'
+    )
+
+    def __str__(self):
+        return f"[{self.timestamp}] {self.error_type} — {self.device_id}"

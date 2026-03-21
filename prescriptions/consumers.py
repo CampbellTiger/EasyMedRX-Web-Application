@@ -1,17 +1,29 @@
 import asyncio
 import json
 from channels.generic.websocket import AsyncWebsocketConsumer
+from channels.layers import get_channel_layer
 from django.utils import timezone
-from asgiref.sync import sync_to_async
+from asgiref.sync import sync_to_async, async_to_sync
 from .models import Prescription
+
 
 class NotificationConsumer(AsyncWebsocketConsumer):
     async def connect(self):
         # All clients join the global "notifications" group
         self.group_name = "notifications"
         await self.channel_layer.group_add(self.group_name, self.channel_name)
+
+        # Also join a user-specific group for targeted notifications
+        user = self.scope.get('user')
+        if user and user.is_authenticated:
+            self.user_group = f"user_{user.id}"
+            await self.channel_layer.group_add(self.user_group, self.channel_name)
+        else:
+            self.user_group = None
+
         await self.accept()
-        print(f"[WS CONNECT] {self.channel_name} joined {self.group_name}")
+        print(f"[WS CONNECT] {self.channel_name} joined {self.group_name}"
+              + (f" and {self.user_group}" if self.user_group else ""))
 
         # Start background loop only once
         if not hasattr(self.channel_layer, "notification_loop_started"):
@@ -20,10 +32,12 @@ class NotificationConsumer(AsyncWebsocketConsumer):
 
     async def disconnect(self, event):
         await self.channel_layer.group_discard(self.group_name, self.channel_name)
+        if self.user_group:
+            await self.channel_layer.group_discard(self.user_group, self.channel_name)
         print(f"[WS DISCONNECT] {self.channel_name} left {self.group_name}")
 
     async def send_notification(self, event):
-        # Called when a message is sent to the "notifications" group
+        # Called when a message is sent to a group this consumer belongs to
         message = event['message']
         await self.send(text_data=json.dumps({"message": message}))
         print(f"[SEND NOTIFICATION] {message}")
@@ -56,7 +70,6 @@ class NotificationConsumer(AsyncWebsocketConsumer):
 
             for p in due_prescriptions:
                 message = f"Time to take {p.medication_name}!"
-                # Send to all connected clients
                 await self.channel_layer.group_send(
                     "notifications",
                     {
@@ -64,7 +77,6 @@ class NotificationConsumer(AsyncWebsocketConsumer):
                         "message": message
                     }
                 )
-                # Mark prescription ready so it won’t trigger again this minute
                 await sync_to_async(self.mark_ready)(p)
 
             # Sleep until next minute
@@ -76,6 +88,23 @@ class NotificationConsumer(AsyncWebsocketConsumer):
         print(f"[MARK READY] {prescription.medication_name} marked as ready.")
 
     def reset_ready_flags(self):
-        # Reset all prescriptions to ready=False for the new day
         Prescription.objects.update(ready=False)
         print("[RESET READY FLAGS] All prescriptions reset for new day.")
+
+
+def notify_user(user_id, message):
+    """
+    Send a WebSocket notification to a specific user's group.
+    Safe to call from synchronous Django views.
+    """
+    channel_layer = get_channel_layer()
+    if not channel_layer:
+        print("[NOTIFY USER] Channel layer not available.")
+        return
+    async_to_sync(channel_layer.group_send)(
+        f"user_{user_id}",
+        {
+            "type": "send_notification",
+            "message": message,
+        }
+    )

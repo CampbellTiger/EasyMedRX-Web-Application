@@ -1,35 +1,37 @@
 from django.contrib.admin.views.decorators import staff_member_required
+from django.contrib.auth.models import User
 from django.shortcuts import render, redirect
-from .models import Prescription
+from .models import Prescription, Device, ErrorLog, PrescriptionLogging
 from .forms import PrescriptionForm
 import calendar
-from datetime import date 
+import json
+from datetime import date
 from django.utils.timezone import now
 from django.http import JsonResponse
 
 #rest framework
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
-from .models import Device
 
 from django.shortcuts import get_object_or_404
 from channels.layers import get_channel_layer
 from asgiref.sync import async_to_sync
 
+from .consumers import notify_user
+
 
 def prescription_ready_view(request, prescription_id):
     prescription = get_object_or_404(Prescription, id=prescription_id)
-    
-    # Send WebSocket notification
+
     channel_layer = get_channel_layer()
     if not channel_layer:
         print("Channel layer is None!")
-        return
+        return JsonResponse({"error": "channel layer unavailable"}, status=503)
     async_to_sync(channel_layer.group_send)(
         "notifications",
         {"type": "send_notification", "message": f"Prescription {prescription.medication_name} is ready!"}
     )
-    
+
     return JsonResponse({"status": "notification sent", "id": prescription.id})
 
 COLOR_PALETTE = [
@@ -41,39 +43,169 @@ COLOR_PALETTE = [
     "#fd7e14",  # orange
 ]
 
+
+def _serialize_prescriptions(prescriptions):
+    """Return a list of prescription dicts suitable for sending back to a device."""
+    return [
+        {
+            'id':                p.id,
+            'medication_name':   p.medication_name,
+            'dosage':            p.dosage,
+            'frequency':         p.frequency,
+            'instructions':      p.instructions,
+            'prescribing_doctor': p.prescribing_doctor,
+            'start_date':        p.start_date.isoformat(),
+            'end_date':          p.end_date.isoformat() if p.end_date else None,
+            'scheduled_time':    p.scheduled_time.isoformat(),
+        }
+        for p in prescriptions
+    ]
+
+
+@api_view(['POST'])
+def device_push(request):
+    """
+    Accepts push requests from external devices with JSON fields:
+      - UID:  device/event unique identifier
+      - Type: event type — controls the response:
+              GET_PRESCRIPTION → returns full prescription info for the user
+              TAKEN / MISSED   → logs the event, returns confirmation
+              ERROR            → logs the error, notifies user, returns confirmation
+              (anything else)  → logged as unknown error, returns confirmation
+      - user: username of the associated patient
+
+    Responses:
+      - GET_PRESCRIPTION  → JSON with user's active prescriptions
+      - all other types   → JSON confirmation (status, uid, type, user)
+    """
+    uid        = request.data.get('UID')
+    event_type = request.data.get('Type')
+    username   = request.data.get('user')
+
+    # Validate required fields
+    missing = [f for f in ('UID', 'Type', 'user') if not request.data.get(f)]
+    if missing:
+        return Response({'error': f"Missing required fields: {', '.join(missing)}"}, status=400)
+
+    # Look up the user
+    try:
+        user = User.objects.get(username=username)
+    except User.DoesNotExist:
+        return Response({'error': f"User '{username}' not found"}, status=404)
+
+    event_upper = event_type.upper()
+
+    # ── Prescription request ────────────────────────────────────────────────
+    if event_upper == 'GET_PRESCRIPTION':
+        prescriptions = list(Prescription.objects.filter(user=user).order_by('scheduled_time'))
+        if not prescriptions:
+            return Response({
+                'status': 'ok',
+                'uid': uid,
+                'user': username,
+                'prescriptions': [],
+                'message': 'No prescriptions found for this user',
+            }, status=200)
+
+        return Response({
+            'status': 'ok',
+            'uid': uid,
+            'user': username,
+            'prescriptions': _serialize_prescriptions(prescriptions),
+        }, status=200)
+
+    # ── Error report ────────────────────────────────────────────────────────
+    elif event_upper == 'ERROR':
+        detail = request.data.get('detail', 'No detail provided')
+
+        ErrorLog.objects.create(
+            device_id=uid,
+            error_type=event_type,
+            detail=detail,
+            user=user,
+        )
+        notify_user(user.id, f"[Device Error] UID: {uid} | {detail}")
+
+        return Response({
+            'status': 'confirmed',
+            'uid': uid,
+            'type': event_type,
+            'user': username,
+            'message': 'Error logged and user notified',
+        }, status=200)
+
+    # ── Prescription taken / missed ─────────────────────────────────────────
+    elif event_upper in ('TAKEN', 'MISSED'):
+        prescription = Prescription.objects.filter(user=user, ready=True).first()
+        if not prescription:
+            return Response({
+                'status': 'confirmed',
+                'uid': uid,
+                'type': event_type,
+                'user': username,
+                'message': 'No ready prescription found; event not logged',
+            }, status=200)
+
+        PrescriptionLogging.objects.create(
+            prescription=prescription,
+            user=user,
+            event_type=event_upper,
+            scheduled_time=prescription.scheduled_time,
+        )
+        notify_user(user.id, f"Prescription {event_upper}: {prescription.medication_name}")
+
+        return Response({
+            'status': 'confirmed',
+            'uid': uid,
+            'type': event_upper,
+            'user': username,
+            'message': f"Event '{event_upper}' logged for {prescription.medication_name}",
+        }, status=200)
+
+    # ── Unknown type ────────────────────────────────────────────────────────
+    else:
+        detail = request.data.get('detail', f"Unrecognized event type: {event_type}")
+
+        ErrorLog.objects.create(
+            device_id=uid,
+            error_type='UNKNOWN_TYPE',
+            detail=detail,
+            user=user,
+        )
+        notify_user(user.id, f"[Unknown Event] UID: {uid} | Type: {event_type} | {detail}")
+
+        return Response({
+            'status': 'confirmed',
+            'uid': uid,
+            'type': event_type,
+            'user': username,
+            'message': f"Unknown type '{event_type}' logged as error",
+        }, status=200)
+
+
 @api_view(['POST'])  #HTTP connection code
 def prescription_get(request):
-    device_id = request.data.get('device_id') #requests the device id
+    device_id = request.data.get('device_id')
 
     if not device_id:
         return Response({'error': "device_id required"}, status=400)
 
     try:
-        device = Device.objects.select_related("user").get(device_id=device_id)
+        device = Device.objects.select_related("patient").get(device_id=device_id)
     except Device.DoesNotExist:
         return Response({"error": "unknown device"}, status=404)
-    
+
     prescription = (
         Prescription.objects
-        .filter(user=device.user, active=True)
+        .filter(user=device.patient, ready=True)
         .first()
     )
 
     if not prescription:
-        return Response({'command':'NO_PRESCRIPTION'}, status=200)
-
-    prescription_id = request.data.get("prescription_id")
-    prescription = get_object_or_404(Prescription, id=prescription_id)
-
-    PrescriptionLogging.objects.create(
-        user_logs=prescription.user,
-        prescription_logs=prescription,
-        event_type="TAKEN",
-        scheduled_time_logs=prescription.scheduled_time
-    )
+        return Response({'command': 'NO_PRESCRIPTION'}, status=200)
 
     return Response({
-        "user_id": device.user.user_id,
+        "user_id": device.patient.id,
         "pill": prescription.medication_name,
         "dosage": prescription.dosage,
     }, status=200)
