@@ -8,7 +8,7 @@ from .forms import PrescriptionForm
 import calendar
 from django.utils.timezone import now, make_aware, is_naive
 from django.http import JsonResponse
-
+from django.views.decorators.csrf import csrf_exempt
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 
@@ -67,7 +67,7 @@ def _parse_event_timestamp(ts_string):
         dt = make_aware(dt)
     return dt
 
-
+@csrf_exempt
 @api_view(['POST'])
 def device_push(request):
     """
