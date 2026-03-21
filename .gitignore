@@ -15,6 +15,13 @@ ENV/
 media/
 staticfiles/
 
+# Celery
+celerybeat-schedule
+celerybeat-schedule.db
+
+# Windows scripts (replaced by startup.py)
+*.bat
+
 # VS Code
 .vscode/
 
