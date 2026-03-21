@@ -353,7 +353,6 @@ def prescription_events(request):
         })
     return JsonResponse(events, safe=False)
 
-@login_required
 def prescription_calendar(request):
     today = now().date()
     month = today.month
