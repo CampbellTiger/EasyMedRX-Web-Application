@@ -124,17 +124,13 @@ DATABASES = {
     }
 }
 
-#Email setup
-EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
-
-EMAIL_HOST = "stmp.gmail.com"  #add these later. DO NOT COMMIT WITH THESE
-EMAIL_PORT = 587
-EMAIL_USE_TLS = True
-
-EMAIL_HOST_USER = "easymedrx419@gmail.com"
-EMAIL_HOST_PASSWORD =  "vugvu687#8"
-
-DEFAULT_FROM_EMAIL = "EasyMedRX  easymedrx419@gmail.com"
+# Email — delivered via the server's local mail agent (no internet required)
+EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+EMAIL_HOST = 'localhost'
+EMAIL_PORT = 25
+EMAIL_USE_TLS = False
+EMAIL_USE_SSL = False
+DEFAULT_FROM_EMAIL = 'EasyMedRX <noreply@localhost>'
 
 # Password validation
 # https://docs.djangoproject.com/en/6.0/ref/settings/#auth-password-validators

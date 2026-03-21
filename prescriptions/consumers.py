@@ -70,11 +70,12 @@ class NotificationConsumer(AsyncWebsocketConsumer):
 
             for p in due_prescriptions:
                 message = f"Time to take {p.medication_name}!"
+                # Send only to this prescription's user, not everyone
                 await self.channel_layer.group_send(
-                    "notifications",
+                    f"user_{p.user_id}",
                     {
                         "type": "send_notification",
-                        "message": message
+                        "message": message,
                     }
                 )
                 await sync_to_async(self.mark_ready)(p)
