@@ -3,7 +3,7 @@ from django.contrib.auth.decorators import login_required
 from django.contrib.auth.models import User
 from django.shortcuts import render, redirect, get_object_or_404
 from django.utils.dateparse import parse_datetime
-from .models import Prescription, Device, ErrorLog, PrescriptionLogging
+from .models import Prescription, ErrorLog, PrescriptionLogging
 from .forms import PrescriptionForm
 import calendar
 from django.utils.timezone import now, make_aware, is_naive
@@ -32,8 +32,9 @@ COLOR_PALETTE = [
 
 
 def _serialize_user_prescriptions(user):
-    """Return a user dict with all their prescriptions for UpdateMCU responses."""
-    prescriptions = Prescription.objects.filter(user=user).order_by('scheduled_time')
+    """Return a user dict with all their prescriptions for UpdateMCU responses.
+    Relies on the caller having used prefetch_related('prescriptions') so that
+    user.prescriptions.all() hits the prefetch cache instead of the database."""
     return {
         'username':    user.username,
         'first_name':  user.first_name,
@@ -50,7 +51,7 @@ def _serialize_user_prescriptions(user):
                 'end_date':          p.end_date.isoformat() if p.end_date else None,
                 'scheduled_time':    p.scheduled_time.strftime('%H:%M'),
             }
-            for p in prescriptions
+            for p in user.prescriptions.all()
         ],
     }
 
@@ -214,7 +215,13 @@ def device_push(request):
 
     # ── UpdateMCU ────────────────────────────────────────────────────────────
     elif event_lower == 'updatemcu':
-        users = User.objects.prefetch_related('prescriptions').all()
+        # Only return users who have prescriptions; exclude staff/superusers
+        users = (
+            User.objects
+            .filter(prescriptions__isnull=False, is_staff=False, is_superuser=False)
+            .prefetch_related('prescriptions')
+            .distinct()
+        )
         return Response({
             'status': 'ok',
             'uid':    uid,
@@ -232,27 +239,39 @@ def device_push(request):
         failed    = 0
         failures  = []
 
+        # Cache user and prescription lookups to avoid repeated DB hits
+        user_cache         = {}  # username → User | None
+        prescription_cache = {}  # (user_id, medication_lower) → Prescription | None
+
         for i, event in enumerate(events):
             username        = event.get('user')
             evt_type        = (event.get('event_type') or '').upper()
             medication_name = event.get('medication_name')
             timestamp       = _parse_event_timestamp(event.get('timestamp'))
 
-            # Resolve user
-            try:
-                user = User.objects.get(username=username)
-            except User.DoesNotExist:
+            # Resolve user (cached)
+            if username not in user_cache:
+                try:
+                    user_cache[username] = User.objects.get(username=username)
+                except User.DoesNotExist:
+                    user_cache[username] = None
+
+            user = user_cache[username]
+            if user is None:
                 failed += 1
                 failures.append({'index': i, 'reason': f"User '{username}' not found"})
                 continue
 
             if evt_type in ('TAKEN', 'MISSED'):
-                # Match prescription by medication name
-                prescription = Prescription.objects.filter(
-                    user=user,
-                    medication_name__iexact=medication_name,
-                ).first()
+                # Resolve prescription (cached)
+                cache_key = (user.id, (medication_name or '').lower())
+                if cache_key not in prescription_cache:
+                    prescription_cache[cache_key] = Prescription.objects.filter(
+                        user=user,
+                        medication_name__iexact=medication_name,
+                    ).first()
 
+                prescription = prescription_cache[cache_key]
                 if not prescription:
                     failed += 1
                     failures.append({
@@ -310,56 +329,31 @@ def device_push(request):
         }, status=400)
 
 
-@api_view(['POST'])  #HTTP connection code
-def prescription_get(request):
-    device_id = request.data.get('device_id')
-
-    if not device_id:
-        return Response({'error': "device_id required"}, status=400)
-
-    try:
-        device = Device.objects.select_related("patient").get(device_id=device_id)
-    except Device.DoesNotExist:
-        return Response({"error": "unknown device"}, status=404)
-
-    prescription = (
-        Prescription.objects
-        .filter(user=device.patient, ready=True)
-        .first()
-    )
-
-    if not prescription:
-        return Response({'command': 'NO_PRESCRIPTION'}, status=200)
-
-    return Response({
-        "user_id": device.patient.id,
-        "pill": prescription.medication_name,
-        "dosage": prescription.dosage,
-    }, status=200)
-
 def prescription_events(request):
     prescriptions = Prescription.objects.select_related('user').all()
-    events = []
-
-    unique_users = list({p.user.id: p.user for p in prescriptions}.values())
-
+    events      = []
     user_colors = {}
-    for i, user in enumerate(unique_users):
-        user_colors[user.id] = COLOR_PALETTE[i % len(COLOR_PALETTE)]
+    color_index = 0
 
     for prescription in prescriptions:
+        uid = prescription.user_id
+        if uid not in user_colors:
+            user_colors[uid] = COLOR_PALETTE[color_index % len(COLOR_PALETTE)]
+            color_index += 1
+
         events.append({
-            'title': prescription.medication_name,
+            'title':        prescription.medication_name,
             'instructions': prescription.instructions,
-            'user': f'{prescription.user.first_name} {prescription.user.last_name}',
-            'start': prescription.start_date.isoformat(),
-            'end': prescription.end_date.isoformat() if prescription.end_date else None,
-            'time': prescription.scheduled_time.strftime('%H:%M'),
-            'allDay': True,
-            'color': user_colors[prescription.user.id],
+            'user':         f'{prescription.user.first_name} {prescription.user.last_name}',
+            'start':        prescription.start_date.isoformat(),
+            'end':          prescription.end_date.isoformat() if prescription.end_date else None,
+            'time':         prescription.scheduled_time.strftime('%H:%M'),
+            'allDay':       True,
+            'color':        user_colors[uid],
         })
     return JsonResponse(events, safe=False)
 
+@login_required
 def prescription_calendar(request):
     today = now().date()
     month = today.month

@@ -1,5 +1,4 @@
 from pathlib import Path
-import sys
 import os
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -155,7 +154,9 @@ AUTH_PASSWORD_VALIDATORS = [
 
 LANGUAGE_CODE = 'en-us'
 
-TIME_ZONE = 'UTC'
+# Set to the timezone where the server/patients are located.
+# Full list: https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
+TIME_ZONE = 'America/New_York'
 
 USE_I18N = True
 
@@ -167,7 +168,7 @@ USE_TZ = True
 
 STATIC_URL = 'static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
-STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStroage"
+STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
 
 
 LOGIN_URL = '/admin/login/'

@@ -1,4 +1,5 @@
 from celery import shared_task
+from django.db.models import Q
 from django.utils import timezone
 from django.core.mail import send_mail
 from django.conf import settings
@@ -9,16 +10,22 @@ from .consumers import notify_user
 
 @shared_task
 def send_due_prescription_notifications():
-    now = timezone.localtime()
+    now   = timezone.localtime()
+    today = now.date()
+
     due_prescriptions = Prescription.objects.select_related('user').filter(
         scheduled_time__hour=now.hour,
         scheduled_time__minute=now.minute,
         ready=False,
+        start_date__lte=today,
+    ).filter(
+        Q(end_date__isnull=True) | Q(end_date__gte=today)
     )
+
     for p in due_prescriptions:
         p.ready = True
         p.last_notified = now
-        p.save()
+        p.save(update_fields=['ready', 'last_notified'])
 
         # WebSocket notification — targeted to this user only
         notify_user(p.user.id, f"Time to take {p.medication_name}!")
