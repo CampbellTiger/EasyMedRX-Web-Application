@@ -1,9 +1,10 @@
 from django.contrib.admin.views.decorators import staff_member_required
+from django.contrib.auth import authenticate
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.models import User
 from django.shortcuts import render, redirect, get_object_or_404
 from django.utils.dateparse import parse_datetime
-from .models import Prescription, ErrorLog, PrescriptionLogging
+from .models import Prescription, ErrorLog, PrescriptionLogging, UserProfile
 from .forms import PrescriptionForm
 import calendar
 from django.utils.timezone import now, make_aware, is_naive
@@ -32,7 +33,7 @@ COLOR_PALETTE = [
 
 
 def _serialize_user_prescriptions(user):
-    """Return a user dict with all their prescriptions for UpdateMCU responses.
+    """Return a user dict with all their prescriptions for UpdateMCU admin responses.
     Relies on the caller having used prefetch_related('prescriptions') so that
     user.prescriptions.all() hits the prefetch cache instead of the database."""
     return {
@@ -44,16 +45,67 @@ def _serialize_user_prescriptions(user):
                 'id':                p.id,
                 'medication_name':   p.medication_name,
                 'dosage':            p.dosage,
+                'dose_count':        p.dose_count,
+                'stock_count':       p.stock_count,
                 'frequency':         p.frequency,
                 'instructions':      p.instructions,
                 'prescribing_doctor': p.prescribing_doctor,
                 'start_date':        p.start_date.isoformat(),
                 'end_date':          p.end_date.isoformat() if p.end_date else None,
                 'scheduled_time':    p.scheduled_time.strftime('%H:%M'),
+                'time_window':       _scheduled_seconds(p),
             }
             for p in user.prescriptions.all()
         ],
     }
+
+
+def _scheduled_seconds(prescription):
+    """Return the prescription's scheduled time-of-day as seconds since midnight (int32).
+    The MCU uses this value to know when to dispense each medication."""
+    t = prescription.scheduled_time
+    return t.hour * 3600 + t.minute * 60
+
+
+def _flat_mcu_response(uid, user, prescriptions):
+    """Build the flat script0-3 / dose0-3 / stock0-3 / time0-3 response the MCU expects."""
+    slots = list(prescriptions[:4])  # MCU supports up to 4 slots
+    resp  = {
+        'type':  'UpdateMCU',
+        'uid':   uid,
+        'user':  user.username,
+        'email': user.email,
+        'phone': getattr(getattr(user, 'profile', None), 'phone', ''),
+    }
+    for i in range(4):
+        if i < len(slots):
+            p = slots[i]
+            resp[f'script{i}'] = p.medication_name
+            resp[f'dose{i}']   = p.dose_count
+            resp[f'stock{i}']  = p.stock_count
+            resp[f'time{i}']   = _scheduled_seconds(p)
+        else:
+            resp[f'script{i}'] = ''
+            resp[f'dose{i}']   = 0
+            resp[f'stock{i}']  = 0
+            resp[f'time{i}']   = 0
+    return resp
+
+
+def _sync_contact_info(user, email, phone):
+    """Update the user's email and phone number if the MCU sent new values."""
+    changed = False
+    if email and user.email != email:
+        user.email = email
+        changed = True
+    if changed:
+        user.save(update_fields=['email'])
+
+    if phone:
+        profile, _ = UserProfile.objects.get_or_create(user=user)
+        if profile.phone != phone:
+            profile.phone = phone
+            profile.save(update_fields=['phone'])
 
 
 def _parse_event_timestamp(ts_string):
@@ -73,159 +125,153 @@ def device_push(request):
     """
     Single endpoint for all MCU → web app communication.
 
-    Required fields in every request:
-        UID  — device identifier
-        Type — one of: error | UpdateMCU | updateWebApp
+    Every request must include:
+        uid   — device identifier  (MCU sends lowercase; UID uppercase also accepted)
+        type  — message type       (MCU sends lowercase; Type uppercase also accepted)
+        user  — username for authentication
+        pword — password for authentication
 
-    ── Type: error ─────────────────────────────────────────────────────────
-    Sent by the MCU when an error occurs. Web app logs it and notifies the
-    user, then returns a confirmation JSON.
+    ── type: UpdateMCU ─────────────────────────────────────────────────────
+    MCU requests a data sync. Authenticates the user and returns that user's
+    prescriptions in the flat MCU format (script0-3, dose0-3, stock0-3,
+    time0-3). Staff/admin credentials return all users in nested format.
 
     MCU sends:
         {
-            "UID":        "device-001",
-            "Type":       "error",
-            "user":       "john_doe",
-            "error_type": "SENSOR_FAILURE",
-            "detail":     "Temperature sensor not responding"
+            "type":    "UpdateMCU",
+            "uid":     "11223344",
+            "user":    "Bugs",
+            "pword":   "Bunny",
+            "email":   "DaphyDuck@gmail.com",
+            "phone":   "904-393-9032",
+            "script0": "Tic-Tacs",  "dose0": 10,  "stock0": 5000,
+            "script1": "Gobstoppers","dose1": 10, "stock1": 1000,
+            "script2": "Atomic Fireballs","dose2":100,"stock2":3000,
+            "script3": "Skittles",  "dose3": 70,  "stock3": 170,
+            "time":    1711234567
+        }
+
+    Web app returns (regular user):
+        {
+            "type": "UpdateMCU", "uid": "11223344", "user": "Bugs",
+            "email": "...", "phone": "...",
+            "script0": "Tic-Tacs",  "dose0": 10, "stock0": 5000, "time0": 28800,
+            "script1": "Gobstoppers","dose1": 10, "stock1":1000,  "time1": 52200,
+            "script2": "",          "dose2":  0, "stock2":    0, "time2":     0,
+            "script3": "",          "dose3":  0, "stock3":    0, "time3":     0
+        }
+
+    Web app returns (staff/admin credentials — admin mode):
+        {
+            "status": "ok", "uid": "...", "admin": true,
+            "users": [ { "username":..., "prescriptions": [...] }, ... ]
+        }
+
+    ── type: ErrorWebApp ───────────────────────────────────────────────────
+    MCU sends when it encounters a device error. Web app logs it, notifies
+    the user, and returns confirmation.
+
+    MCU sends:
+        {
+            "type":    "ErrorWebApp",
+            "uid":     "11223344",
+            "user":    "plaintext_username",
+            "pword":   "plaintext_password",
+            "email":   "helloworld@gmail.com",
+            "phone":   "000-000-0000",
+            "message": "Unable to connect to web application"
         }
 
     Web app returns:
-        {
-            "status":  "confirmed",
-            "uid":     "device-001",
-            "type":    "error",
-            "message": "Error logged"
-        }
+        { "status": "confirmed", "uid": "...", "type": "ErrorWebApp", "message": "Error logged" }
 
-    ── Type: UpdateMCU ─────────────────────────────────────────────────────
-    MCU requests a full data sync. Web app returns every user and all their
-    prescription details (medication, dosage, frequency, schedule, etc.).
+    ── type: updateWebApp ──────────────────────────────────────────────────
+    MCU sends batched offline events. Web app logs each event and confirms.
 
     MCU sends:
         {
-            "UID":  "device-001",
-            "Type": "UpdateMCU"
-        }
-
-    Web app returns:
-        {
-            "status": "ok",
-            "uid":    "device-001",
-            "users": [
-                {
-                    "username":   "john_doe",
-                    "first_name": "John",
-                    "last_name":  "Doe",
-                    "prescriptions": [
-                        {
-                            "id":                1,
-                            "medication_name":   "Metformin",
-                            "dosage":            "500mg",
-                            "frequency":         "Twice daily",
-                            "instructions":      "Take with food",
-                            "prescribing_doctor": "Dr. Smith",
-                            "start_date":        "2026-03-01",
-                            "end_date":          "2026-06-01",
-                            "scheduled_time":    "08:00"
-                        }
-                    ]
-                }
-            ]
-        }
-
-    ── Type: updateWebApp ──────────────────────────────────────────────────
-    Sent by the MCU after the web app was offline. Contains all events that
-    occurred on the device while the web app was unreachable. Web app logs
-    each event to the database, then returns a confirmation JSON.
-
-    MCU sends:
-        {
-            "UID":  "device-001",
-            "Type": "updateWebApp",
+            "type": "updateWebApp", "uid": "...",
+            "user": "...", "pword": "...",
             "events": [
-                {
-                    "user":            "john_doe",
-                    "event_type":      "TAKEN",
-                    "medication_name": "Metformin",
-                    "timestamp":       "2026-03-21T08:05:00"
-                },
-                {
-                    "user":            "jane_doe",
-                    "event_type":      "MISSED",
-                    "medication_name": "Lisinopril",
-                    "timestamp":       "2026-03-21T12:00:00"
-                },
-                {
-                    "user":       "john_doe",
-                    "event_type": "ERROR",
-                    "error_type": "JAM",
-                    "detail":     "Pill dispenser jammed",
-                    "timestamp":  "2026-03-21T09:00:00"
-                }
+                { "user": "john_doe", "event_type": "TAKEN",
+                  "medication_name": "Metformin", "timestamp": "2026-03-21T08:05:00" },
+                { "user": "jane_doe", "event_type": "MISSED",
+                  "medication_name": "Lisinopril","timestamp": "2026-03-21T12:00:00" }
             ]
         }
 
     Web app returns:
-        {
-            "status":    "confirmed",
-            "uid":       "device-001",
-            "type":      "updateWebApp",
-            "processed": 3,
-            "failed":    0,
-            "message":   "All events logged"
-        }
+        { "status": "confirmed", "uid": "...", "processed": 2, "failed": 0, "message": "All events logged" }
     """
-    uid        = request.data.get('UID')
-    event_type = request.data.get('Type')
+    # Accept both lowercase (MCU native) and uppercase (legacy) key names
+    uid        = request.data.get('uid') or request.data.get('UID')
+    event_type = request.data.get('type') or request.data.get('Type')
+    username   = request.data.get('user')
+    password   = request.data.get('pword')
+    email      = request.data.get('email', '')
+    phone      = request.data.get('phone', '')
 
     if not uid or not event_type:
-        return Response({'error': 'UID and Type are required'}, status=400)
+        return Response({'error': 'uid and type are required'}, status=400)
 
     event_lower = event_type.lower()
 
-    # ── error ────────────────────────────────────────────────────────────────
-    if event_lower == 'error':
-        username   = request.data.get('user')
-        error_type = request.data.get('error_type', 'DEVICE_ERROR')
-        detail     = request.data.get('detail', 'No detail provided')
+    # ── Authenticate (required for all types) ────────────────────────────────
+    if not username or not password:
+        return Response({'error': 'user and pword are required'}, status=400)
 
-        if not username:
-            return Response({'error': "'user' is required for type 'error'"}, status=400)
+    auth_user = authenticate(username=username, password=password)
+    if auth_user is None:
+        return Response({'error': 'Authentication failed'}, status=401)
 
-        try:
-            user = User.objects.get(username=username)
-        except User.DoesNotExist:
-            return Response({'error': f"User '{username}' not found"}, status=404)
+    # Update email / phone from device if supplied
+    _sync_contact_info(auth_user, email, phone)
 
+    # ── UpdateMCU ────────────────────────────────────────────────────────────
+    if event_lower == 'updatemcu':
+        # Update any stock counts the MCU reports for this user's prescriptions
+        prescriptions = list(
+            Prescription.objects.filter(user=auth_user).order_by('scheduled_time')
+        )
+        for i in range(4):
+            stock_val = request.data.get(f'stock{i}')
+            if stock_val is not None and i < len(prescriptions):
+                prescriptions[i].stock_count = int(stock_val)
+                prescriptions[i].save(update_fields=['stock_count'])
+
+        if auth_user.is_staff or auth_user.is_superuser:
+            # Admin mode — return all non-staff users with full prescription detail
+            users = (
+                User.objects
+                .filter(prescriptions__isnull=False, is_staff=False, is_superuser=False)
+                .prefetch_related('prescriptions')
+                .distinct()
+            )
+            return Response({
+                'status': 'ok',
+                'uid':    uid,
+                'admin':  True,
+                'users':  [_serialize_user_prescriptions(u) for u in users],
+            }, status=200)
+
+        # Regular user — return flat MCU format
+        return Response(_flat_mcu_response(uid, auth_user, prescriptions), status=200)
+
+    # ── ErrorWebApp ──────────────────────────────────────────────────────────
+    elif event_lower == 'errorwebapp':
+        message = request.data.get('message', 'No message provided')
         ErrorLog.objects.create(
             device_id=uid,
-            error_type=error_type,
-            detail=detail,
-            user=user,
+            error_type='DEVICE_ERROR',
+            detail=message,
+            user=auth_user,
         )
-        notify_user(user.id, f"[Device Error] {error_type}: {detail}")
-
+        notify_user(auth_user.id, f"[Device Error] {message}")
         return Response({
             'status':  'confirmed',
             'uid':     uid,
-            'type':    'error',
+            'type':    'ErrorWebApp',
             'message': 'Error logged',
-        }, status=200)
-
-    # ── UpdateMCU ────────────────────────────────────────────────────────────
-    elif event_lower == 'updatemcu':
-        # Only return users who have prescriptions; exclude staff/superusers
-        users = (
-            User.objects
-            .filter(prescriptions__isnull=False, is_staff=False, is_superuser=False)
-            .prefetch_related('prescriptions')
-            .distinct()
-        )
-        return Response({
-            'status': 'ok',
-            'uid':    uid,
-            'users':  [_serialize_user_prescriptions(u) for u in users],
         }, status=200)
 
     # ── updateWebApp ─────────────────────────────────────────────────────────
@@ -324,8 +370,8 @@ def device_push(request):
     # ── Unknown type ─────────────────────────────────────────────────────────
     else:
         return Response({
-            'error':           f"Unknown Type '{event_type}'",
-            'supported_types': ['error', 'UpdateMCU', 'updateWebApp'],
+            'error':           f"Unknown type '{event_type}'",
+            'supported_types': ['UpdateMCU', 'ErrorWebApp', 'updateWebApp'],
         }, status=400)
 
 

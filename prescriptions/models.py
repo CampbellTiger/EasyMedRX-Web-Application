@@ -2,6 +2,16 @@ from django.db import models
 from django.contrib.auth.models import User
 from django.utils import timezone
 
+
+class UserProfile(models.Model):
+    """Stores extra contact info not on Django's built-in User model."""
+    user  = models.OneToOneField(User, on_delete=models.CASCADE, related_name='profile')
+    phone = models.CharField(max_length=30, blank=True, default='')
+
+    def __str__(self):
+        return f"Profile({self.user.username})"
+
+
 class Prescription(models.Model):
     user = models.ForeignKey(
         User,
@@ -10,6 +20,10 @@ class Prescription(models.Model):
     )
     medication_name = models.CharField(max_length=200)
     dosage = models.CharField(max_length=100)
+    # Number of units (pills) per dose — used in the MCU flat format (dose0-3)
+    dose_count  = models.PositiveIntegerField(default=1)
+    # Current stock level on the device — kept in sync via MCU push (stock0-3)
+    stock_count = models.PositiveIntegerField(default=0)
     frequency = models.CharField(max_length=100)
     instructions = models.TextField(blank=True)
     prescribing_doctor = models.CharField(max_length=200)
