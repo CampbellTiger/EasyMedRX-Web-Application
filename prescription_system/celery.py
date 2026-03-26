@@ -14,4 +14,8 @@ app.conf.beat_schedule = {
         'task': 'prescriptions.tasks.send_due_prescription_notifications',
         'schedule': crontab(),  # runs every minute
     },
+    'reset-prescription-ready-flags-daily': {
+        'task': 'prescriptions.tasks.reset_prescription_ready_flags',
+        'schedule': crontab(hour=0, minute=0),  # runs at midnight
+    },
 }

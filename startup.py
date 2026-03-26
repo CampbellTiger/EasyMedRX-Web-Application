@@ -90,9 +90,8 @@ for f in glob.glob("celerybeat-schedule*"):
     print(f"Removed {f}")
 
 print("\nStopping stale processes...")
-subprocess.run(["pkill", "-f", "celery beat"],   stderr=subprocess.DEVNULL)
-subprocess.run(["pkill", "-f", "celery worker"], stderr=subprocess.DEVNULL)
-subprocess.run(["pkill", "-f", "daphne"],        stderr=subprocess.DEVNULL)
+subprocess.run(["pkill", "-9", "-f", "celery"],  stderr=subprocess.DEVNULL)
+subprocess.run(["pkill", "-9", "-f", "daphne"],  stderr=subprocess.DEVNULL)
 time.sleep(2)
 
 for f in ["celerybeat-schedule", "celerybeat-schedule.db"]:
@@ -119,8 +118,13 @@ print()
 # ── Start services ─────────────────────────────────────────────────────────────
 
 print("Starting services...")
-subprocess.Popen(["celery", "-A", "prescription_system", "beat",   "--loglevel=info"])
-subprocess.Popen(["celery", "-A", "prescription_system", "worker", "-n", "worker1@%h", "--loglevel=info"])
-subprocess.Popen(["daphne", "-b", "0.0.0.0", "-p", "8000", "prescription_system.asgi:application"])
+beat_log   = open("logs/celery_beat.log",   "w")
+worker_log = open("logs/celery_worker.log", "w")
+daphne_log = open("logs/daphne.log",        "w")
+
+subprocess.Popen(["celery", "-A", "prescription_system", "beat",   "--loglevel=info"],              stdout=beat_log,   stderr=beat_log)
+subprocess.Popen(["celery", "-A", "prescription_system", "worker", "-n", "worker1@%h", "--loglevel=info"], stdout=worker_log, stderr=worker_log)
+subprocess.Popen(["daphne", "-b", "0.0.0.0", "-p", "8000", "prescription_system.asgi:application"], stdout=daphne_log, stderr=daphne_log)
 
 print("All services started!")
+print("Logs: logs/celery_beat.log | logs/celery_worker.log | logs/daphne.log")

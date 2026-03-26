@@ -150,7 +150,7 @@ LANGUAGE_CODE = 'en-us'
 
 # Set to the timezone where the server/patients are located.
 # Full list: https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
-TIME_ZONE = 'America/New_York'
+TIME_ZONE = 'America/Chicago'
 
 USE_I18N = True
 

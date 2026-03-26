@@ -7,7 +7,7 @@ from django.utils.dateparse import parse_datetime
 from .models import Prescription, ErrorLog, PrescriptionLogging, UserProfile
 from .forms import PrescriptionForm
 import calendar
-from django.utils.timezone import now, make_aware, is_naive
+from django.utils.timezone import now, make_aware, is_naive, localtime
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from rest_framework.decorators import api_view
@@ -393,7 +393,7 @@ def prescription_events(request):
             'user':         f'{prescription.user.first_name} {prescription.user.last_name}',
             'start':        prescription.start_date.isoformat(),
             'end':          prescription.end_date.isoformat() if prescription.end_date else None,
-            'time':         prescription.scheduled_time.strftime('%H:%M'),
+            'time':         localtime(prescription.scheduled_time).strftime('%H:%M'),
             'allDay':       True,
             'color':        user_colors[uid],
         })

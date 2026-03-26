@@ -7,7 +7,6 @@
 
     <!-- FullCalendar CSS -->
 <!-- FullCalendar CSS -->
-<link href="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.11/index.global.min.css" rel="stylesheet" />
 
 <!-- FullCalendar JS -->
 <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.11/index.global.min.js"></script>
@@ -82,29 +81,33 @@
 }
 
     let ws;
-    ws = new WebSocket("ws://" + window.location.host + "/ws/notifications/");
-    
-    
-    ws.onopen = function() {
-        console.log("WebSocket connected!");
-    };
 
-    ws.onmessage = function(event) {
-        let data = JSON.parse(event.data);
-        console.log("Notification received:", data.message);
-        if (Notification.permission === "granted") {
-            new Notification("Prescription Reminder", {
-                body: data.message,
-            });
-        }
-        else {
-            console.log("Notification permission not granted.");
-        }
-    };
-    
-    ws.onclose = function() {
-        console.log('WebSocket closed');
-    };
+    function connectWebSocket() {
+        ws = new WebSocket("ws://" + window.location.host + "/ws/notifications/");
+
+        ws.onopen = function() {
+            console.log("WebSocket connected!");
+        };
+
+        ws.onmessage = function(event) {
+            let data = JSON.parse(event.data);
+            console.log("Notification received:", data.message);
+            if (Notification.permission === "granted") {
+                new Notification("Prescription Reminder", {
+                    body: data.message,
+                });
+            } else {
+                console.log("Notification permission not granted.");
+            }
+        };
+
+        ws.onclose = function() {
+            console.log("WebSocket closed, reconnecting in 3s...");
+            setTimeout(connectWebSocket, 3000);
+        };
+    }
+
+    connectWebSocket();
     
 </script>
 

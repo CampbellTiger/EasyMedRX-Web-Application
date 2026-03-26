@@ -9,6 +9,13 @@ from .consumers import notify_user
 
 
 @shared_task
+def reset_prescription_ready_flags():
+    """Reset ready=True prescriptions to False each midnight so they can fire again the next day."""
+    updated = Prescription.objects.filter(ready=True).update(ready=False)
+    return f"Reset {updated} prescription(s) to ready=False"
+
+
+@shared_task
 def send_due_prescription_notifications():
     now   = timezone.localtime()
     today = now.date()
@@ -28,7 +35,12 @@ def send_due_prescription_notifications():
         p.save(update_fields=['ready', 'last_notified'])
 
         # WebSocket notification — targeted to this user only
-        notify_user(p.user.id, f"Time to take {p.medication_name}!")
+        print(f"[TASK] Sending notification for {p.medication_name} to user_id={p.user.id}")
+        try:
+            notify_user(p.user.id, f"Time to take {p.medication_name}!")
+            print(f"[TASK] notify_user succeeded")
+        except Exception as e:
+            print(f"[TASK] notify_user FAILED: {e}")
 
         # Prescription logging
         PrescriptionLogging.objects.create(

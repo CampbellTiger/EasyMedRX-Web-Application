@@ -36,17 +36,14 @@ class NotificationConsumer(AsyncWebsocketConsumer):
 
 def notify_user(user_id, message):
     """
-    Send a WebSocket notification to a specific user's group.
+    Send a WebSocket notification to a specific user's group and the global
+    notifications group (so any logged-in staff member also receives it).
     Safe to call from synchronous Django views and Celery tasks.
     """
     channel_layer = get_channel_layer()
     if not channel_layer:
         print("[NOTIFY USER] Channel layer not available.")
         return
-    async_to_sync(channel_layer.group_send)(
-        f"user_{user_id}",
-        {
-            "type": "send_notification",
-            "message": message,
-        }
-    )
+    payload = {"type": "send_notification", "message": message}
+    async_to_sync(channel_layer.group_send)(f"user_{user_id}", payload)
+    async_to_sync(channel_layer.group_send)("notifications", payload)

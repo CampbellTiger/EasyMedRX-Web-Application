@@ -20,9 +20,9 @@ class Prescription(models.Model):
     )
     medication_name = models.CharField(max_length=200)
     dosage = models.CharField(max_length=100)
-    # Number of units (pills) per dose — used in the MCU flat format (dose0-3)
+    # Number of units (pills) per dose — used in the MCU flat format 
     dose_count  = models.PositiveIntegerField(default=1)
-    # Current stock level on the device — kept in sync via MCU push (stock0-3)
+    # Current stock level on the device — kept in sync via MCU push 
     stock_count = models.PositiveIntegerField(default=0)
     frequency = models.CharField(max_length=100)
     instructions = models.TextField(blank=True)
