@@ -22,15 +22,31 @@ DEBUG = True
 
 # sys.stdout.write(f"http://{get_ip_address()}\n") #get ip address from command line
 
-# Static LAN IP of the Windows host
-LOCAL_IP = '10.102.253.90'
+import socket as _socket
 
-ALLOWED_HOSTS = ['127.0.0.1', 'localhost', LOCAL_IP, 'easymedrx.local']
+def _get_lan_ip():
+    try:
+        s = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return '127.0.0.1'
+
+LOCAL_IP = _get_lan_ip()
+
+# Set by startup.py at launch; empty string when running outside startup.py
+WINDOWS_HOST_IP = os.environ.get('DJANGO_WINDOWS_IP', '')
+
+_extra_hosts = [h for h in [WINDOWS_HOST_IP] if h]
+
+ALLOWED_HOSTS = ['127.0.0.1', 'localhost', LOCAL_IP, 'easymedrx.local'] + _extra_hosts
 CSRF_TRUSTED_ORIGINS = [
     'http://127.0.0.1:8000',
     f'http://{LOCAL_IP}:8000',
     'http://easymedrx.local:8000',
-]
+] + [f'http://{h}:8000' for h in _extra_hosts]
 
 # Application definition
 

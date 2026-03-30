@@ -2,41 +2,56 @@ import subprocess
 import os
 import time
 import glob
-
-
-# ── Helpers ────────────────────────────────────────────────────────────────────
+import socket
 
 def get_wsl_ip():
-    """Return the WSL interface's own IP address."""
+    """Return the WSL2 LAN IP (the address Daphne will bind to)."""
     try:
-        result = subprocess.run(['hostname', '-I'], capture_output=True, text=True)
-        return result.stdout.strip().split()[0]
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
     except Exception:
         return '127.0.0.1'
 
 
-# Static LAN IP — update this if the Windows host IP changes
-WINDOWS_IP = '10.102.253.90'
+def get_windows_lan_ip():
+    """Return the Windows host's Wi-Fi LAN IP by querying PowerShell."""
+    try:
+        result = subprocess.run(
+            ['powershell.exe', '-NoProfile', '-Command',
+             "(Get-NetIPAddress -AddressFamily IPv4 | Where-Object "
+             "{ $_.InterfaceAlias -like 'Wi-Fi' -and $_.AddressState -eq 'Preferred' }).IPAddress"],
+            capture_output=True, text=True, timeout=5
+        )
+        ip = result.stdout.strip()
+        if ip:
+            return ip
+    except Exception:
+        pass
+    return None
 
 
 def setup_port_proxy(wsl_ip):
-    """
-    Forward Windows host 0.0.0.0:8000 → WSL IP:8000 using netsh portproxy.
-    Replaces proxy.bat — runs via PowerShell so no separate .bat file is needed.
-    """
-    ps_cmd = (
-        f"netsh interface portproxy delete v4tov4 listenport=8000 listenaddress=0.0.0.0 2>$null; "
-        f"netsh interface portproxy add v4tov4 listenport=8000 listenaddress=0.0.0.0 "
-        f"connectport=8000 connectaddress={wsl_ip}"
+    """Forward Windows 0.0.0.0:8000 → WSL2 {wsl_ip}:8000 so LAN devices can reach Daphne."""
+    # Remove any stale entry first (ignore errors if none exists)
+    subprocess.run(
+        ['powershell.exe', '-NoProfile', '-Command',
+         'netsh interface portproxy delete v4tov4 listenport=8000 listenaddress=0.0.0.0'],
+        capture_output=True
     )
     result = subprocess.run(
-        ['powershell.exe', '-NoProfile', '-Command', ps_cmd],
+        ['powershell.exe', '-NoProfile', '-Command',
+         f'netsh interface portproxy add v4tov4 listenport=8000 '
+         f'listenaddress=0.0.0.0 connectport=8000 connectaddress={wsl_ip}'],
         capture_output=True, text=True
     )
     if result.returncode == 0:
-        print(f"  Port proxy: Windows 0.0.0.0:8000 → WSL {wsl_ip}:8000")
+        print(f"  Port proxy: 0.0.0.0:8000 → {wsl_ip}:8000")
     else:
-        print(f"  Port proxy failed (run as Administrator): {result.stderr.strip()}")
+        print(f"  Port proxy: FAILED — try running startup.py as admin")
+        print(f"    {result.stderr.strip()}")
 
 
 def ensure_firewall_rule():
@@ -60,27 +75,8 @@ def ensure_firewall_rule():
         print("  Firewall: rule already exists")
 
 
-def update_windows_hosts():
-    """
-    Add '127.0.0.1 easymedrx.local' to the Windows hosts file so the host
-    machine can reach the app by name. LAN clients use the Windows LAN IP directly.
-    """
-    hosts_path = '/mnt/c/Windows/System32/drivers/etc/hosts'
-    hostname = 'easymedrx.local'
-    entry = f'127.0.0.1 {hostname}'
-    try:
-        with open(hosts_path, 'r') as f:
-            content = f.read()
-        if hostname not in content:
-            with open(hosts_path, 'a') as f:
-                f.write(f'\n{entry}\n')
-            print(f"  Hosts file: added '{entry}'")
-        else:
-            print(f"  Hosts file: '{hostname}' already present")
-    except PermissionError:
-        print(f"  Hosts file: permission denied — run as Administrator to enable {hostname}")
-    except Exception as e:
-        print(f"  Hosts file: could not update ({e})")
+WSL_IP      = get_wsl_ip()
+WINDOWS_IP  = get_windows_lan_ip()
 
 
 # ── Clean up stale state ───────────────────────────────────────────────────────
@@ -92,7 +88,22 @@ for f in glob.glob("celerybeat-schedule*"):
 print("\nStopping stale processes...")
 subprocess.run(["pkill", "-9", "-f", "celery"],  stderr=subprocess.DEVNULL)
 subprocess.run(["pkill", "-9", "-f", "daphne"],  stderr=subprocess.DEVNULL)
-time.sleep(2)
+
+# Wait until port 8000 is actually free (mirrored networking can delay release)
+print("Waiting for port 8000 to be released...", end="", flush=True)
+for _ in range(30):
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            s.bind(("0.0.0.0", 8000))
+            break
+        except OSError:
+            print(".", end="", flush=True)
+            time.sleep(1)
+else:
+    print("\nERROR: Port 8000 still in use after 30s. Aborting.")
+    raise SystemExit(1)
+print(" free!")
 
 for f in ["celerybeat-schedule", "celerybeat-schedule.db"]:
     if os.path.exists(f):
@@ -100,18 +111,20 @@ for f in ["celerybeat-schedule", "celerybeat-schedule.db"]:
         print(f"Removed {f}")
 
 
-# ── LAN / WSL network setup ───────────────────────────────────────────────────
+# ── Network / Firewall ────────────────────────────────────────────────────────
 
-print("\nConfiguring LAN access...")
-wsl_ip = get_wsl_ip()
-
-setup_port_proxy(wsl_ip)
+print("\nConfiguring network access...")
+setup_port_proxy(WSL_IP)
 ensure_firewall_rule()
-update_windows_hosts()
+
+# Pass both IPs to Django via environment so ALLOWED_HOSTS stays up to date
+os.environ['DJANGO_WSL_IP']     = WSL_IP
+os.environ['DJANGO_WINDOWS_IP'] = WINDOWS_IP or ''
 
 print("\n  Access URLs:")
-print(f"    Local  →  http://easymedrx.local:8000")
-print(f"    LAN    →  http://{WINDOWS_IP}:8000")
+print(f"    WSL2    →  http://{WSL_IP}:8000")
+if WINDOWS_IP:
+    print(f"    LAN/MCU →  http://{WINDOWS_IP}:8000")
 print()
 
 

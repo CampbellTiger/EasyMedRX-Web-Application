@@ -216,19 +216,20 @@ def device_push(request):
 
     event_lower = event_type.lower()
 
-    # ── Authenticate (required for all types) ────────────────────────────────
-    if not username or not password:
-        return Response({'error': 'user and pword are required'}, status=400)
+    # Look up user by username (no password check)
+    try:
+        auth_user = User.objects.get(username=username) if username else None
+    except User.DoesNotExist:
+        auth_user = None
 
-    auth_user = authenticate(username=username, password=password)
-    if auth_user is None:
-        return Response({'error': 'Authentication failed'}, status=401)
-
-    # Update email / phone from device if supplied
-    _sync_contact_info(auth_user, email, phone)
+    # # Update email / phone from device if supplied. Dont need right now. MCU shouldn't update web application's stuff?
+    # if auth_user:
+    #     _sync_contact_info(auth_user, email, phone)
 
     # ── UpdateMCU ────────────────────────────────────────────────────────────
     if event_lower == 'updatemcu':
+        if not auth_user:
+            return Response({'status': 'error', 'detail': 'unknown user'}, status=400)
         # Update any stock counts the MCU reports for this user's prescriptions
         prescriptions = list(
             Prescription.objects.filter(user=auth_user).order_by('scheduled_time')
@@ -239,7 +240,7 @@ def device_push(request):
                 prescriptions[i].stock_count = int(stock_val)
                 prescriptions[i].save(update_fields=['stock_count'])
 
-        if auth_user.is_staff or auth_user.is_superuser:
+        if auth_user and (auth_user.is_staff or auth_user.is_superuser):
             # Admin mode — return all non-staff users with full prescription detail
             users = (
                 User.objects
@@ -266,7 +267,8 @@ def device_push(request):
             detail=message,
             user=auth_user,
         )
-        notify_user(auth_user.id, f"[Device Error] {message}")
+        if auth_user:
+            notify_user(auth_user.id, f"[Device Error] {message}")
         return Response({
             'status':  'confirmed',
             'uid':     uid,

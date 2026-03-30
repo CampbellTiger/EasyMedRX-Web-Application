@@ -83,3 +83,12 @@ class ErrorLog(models.Model):
 
     def __str__(self):
         return f"[{self.timestamp}] {self.error_type} — {self.device_id}"
+
+
+class FailedLoginLog(models.Model):
+    username  = models.CharField(max_length=150)
+    ip        = models.GenericIPAddressField(null=True, blank=True)
+    timestamp = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"[{self.timestamp}] Failed login — {self.username} from {self.ip}"
