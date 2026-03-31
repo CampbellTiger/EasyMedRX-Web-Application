@@ -118,6 +118,7 @@ print()
 # ── Start services ─────────────────────────────────────────────────────────────
 
 print("Starting services...")
+os.makedirs("logs", exist_ok=True)
 beat_log   = open("logs/celery_beat.log",   "w")
 worker_log = open("logs/celery_worker.log", "w")
 daphne_log = open("logs/daphne.log",        "w")
