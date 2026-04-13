@@ -1,0 +1,10 @@
+{
+    "name": "EasyMedRX",
+    "short_name": "EasyMedRX",
+    "description": "Prescription medication management and reminders",
+    "start_url": "/",
+    "display": "standalone",
+    "background_color": "#ffffff",
+    "theme_color": "#1a73e8",
+    "icons": []
+}
