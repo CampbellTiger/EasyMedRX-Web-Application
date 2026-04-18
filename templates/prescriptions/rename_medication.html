@@ -1,0 +1,380 @@
+{% load static %}
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Edit Medication – EasyMedRX</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; }
+        nav  { margin-bottom: 20px; }
+        nav a { margin-right: 10px; }
+
+        .badge-connected    { display:inline-block; padding:4px 10px; border-radius:12px; font-size:.85em; background:#d4edda; color:#155724; margin-bottom:16px; }
+        .badge-disconnected { display:inline-block; padding:4px 10px; border-radius:12px; font-size:.85em; background:#f8d7da; color:#721c24; margin-bottom:16px; }
+
+        .alert-warning { background:#fff3cd; border:1px solid #ffc107; color:#856404; padding:14px 18px; border-radius:4px; margin-bottom:20px; }
+        .alert-success { background:#d4edda; border:1px solid #28a745; color:#155724; padding:14px 18px; border-radius:4px; margin-bottom:20px; }
+        .alert-danger  { background:#f8d7da; border:1px solid #dc3545; color:#721c24; padding:14px 18px; border-radius:4px; margin-bottom:20px; }
+
+        .card { max-width: 680px; border: 1px solid #dee2e6; border-radius: 6px; padding: 28px 32px; margin-top: 24px; }
+
+        .field-row { display: flex; gap: 16px; margin-top: 14px; }
+        .field-row .field { flex: 1; }
+        .field { margin-top: 14px; }
+
+        label { display: block; font-weight: bold; font-size: .88em; margin-bottom: 4px; }
+        input[type=text],
+        input[type=number],
+        input[type=date],
+        input[type=datetime-local],
+        select,
+        textarea {
+            width: 100%; padding: 8px 10px;
+            border: 1px solid #ced4da; border-radius: 4px;
+            font-size: 1em; box-sizing: border-box;
+        }
+        textarea { resize: vertical; }
+        input[type=checkbox] { width: auto; margin-top: 6px; transform: scale(1.2); }
+
+        .field-checkbox { display: flex; align-items: center; gap: 10px; margin-top: 14px; }
+        .field-checkbox label { margin-bottom: 0; }
+
+        button[type=submit] {
+            margin-top: 24px; padding: 10px 28px;
+            background: #1E90FF; color: #fff; border: none;
+            border-radius: 4px; font-size: 1em; cursor: pointer;
+        }
+        button[type=submit]:disabled { background: #aaa; cursor: not-allowed; }
+
+        .empty-note { color: #999; font-style: italic; font-size: .9em; margin-top: 8px; }
+    </style>
+</head>
+<body>
+
+<nav>
+    <a href="{% url 'calendar' %}">Calendar</a>
+    <a href="{% url 'rename_medication' %}">Edit Medication</a>
+    {% if user.is_staff %}<a href="/admin/">Management Area</a>{% endif %}
+    {% if user.is_authenticated %}<span style="margin-left:10px;">Welcome, {{ user.username }}!</span>{% endif %}
+</nav>
+
+<h2>Edit Medication</h2>
+
+{% if mcu_connected %}
+    <span class="badge-connected">&#10003; MCU Connected</span>
+{% else %}
+    <span class="badge-disconnected">&#10007; MCU Disconnected</span>
+{% endif %}
+
+{% if success %}<div class="alert-success">{{ success }}</div>{% endif %}
+
+{% if not mcu_connected %}
+<div class="alert-warning">
+    <strong>Not connected to MCU.</strong> Try again later.
+    The MCU must send at least one request within the last 60 seconds before changes can be saved.
+</div>
+{% endif %}
+
+<div class="card">
+    <form method="post" id="edit-form">
+        {% csrf_token %}
+
+        <!-- Hidden fields passed on POST -->
+        <input type="hidden" name="prescription_id" id="prescription_id" value="">
+        <input type="hidden" name="container_num"   id="container-num-input" value="">
+
+        <!-- Container selector — this IS the compartment -->
+        <div class="field">
+            <label for="container-select">Container</label>
+            <select id="container-select" {% if not mcu_connected %}disabled{% endif %}>
+                <option value="">— select a container —</option>
+                {% for c in compartments %}
+                    {% if c.obj %}
+                        <option value="{{ c.container }}">Container {{ c.container }} — {{ c.obj.medication_name }} (stock: {{ c.obj.stock_count }})</option>
+                    {% else %}
+                        <option value="{{ c.container }}">Container {{ c.container }} — Empty</option>
+                    {% endif %}
+                {% endfor %}
+            </select>
+        </div>
+
+        <!-- All prescription fields (hidden until a container is selected) -->
+        <div id="prescription-fields" style="display:none;">
+
+            <div class="field-row">
+                <div class="field">
+                    <label for="{{ form.medication_name.id_for_label }}">Medication Name *</label>
+                    {{ form.medication_name }}
+                </div>
+                <div class="field">
+                    <label for="{{ form.dosage.id_for_label }}">Dosage *</label>
+                    {{ form.dosage }}
+                </div>
+            </div>
+
+            <div class="field-row">
+                <div class="field">
+                    <label for="{{ form.dose_count.id_for_label }}">Dose Count *</label>
+                    {{ form.dose_count }}
+                </div>
+                <div class="field">
+                    <label for="{{ form.stock_count.id_for_label }}">Stock Count *</label>
+                    {{ form.stock_count }}
+                </div>
+                <div class="field">
+                    <label for="{{ form.add_stock.id_for_label }}" title="Added to the MCU's next reported stock count, then resets to 0">Add Stock</label>
+                    {{ form.add_stock }}
+                </div>
+            </div>
+
+            <!-- Doses per day is driven by the grid below; keep as hidden sync field -->
+            <input type="hidden" name="doses_per_day" id="id_doses_per_day" value="1">
+
+            <div class="field" id="dose-times-section">
+                <label style="margin-bottom:8px;">Dose Schedule
+                    <span style="font-weight:normal;color:#888;font-size:.85em;"> — evenly spaced by default, edit any time manually</span>
+                </label>
+                <div id="dose-times-list"></div>
+                <button type="button" id="add-dose-btn"
+                        style="margin-top:8px;padding:6px 16px;background:#e8f4fd;color:#1E90FF;border:1px solid #90caf9;border-radius:4px;font-size:.9em;cursor:pointer;">
+                    + Add Dose
+                </button>
+            </div>
+
+            <div class="field">
+                <label for="{{ form.instructions.id_for_label }}">Instructions</label>
+                {{ form.instructions }}
+            </div>
+
+            <div class="field">
+                <label for="{{ form.prescribing_doctor.id_for_label }}">Prescribing Doctor *</label>
+                {{ form.prescribing_doctor }}
+            </div>
+
+            <div class="field-row">
+                <div class="field">
+                    <label for="{{ form.start_date.id_for_label }}">Start Date *</label>
+                    {{ form.start_date }}
+                </div>
+                <div class="field">
+                    <label for="{{ form.end_date.id_for_label }}">End Date</label>
+                    {{ form.end_date }}
+                </div>
+            </div>
+
+            <div class="field">
+                <label for="{{ form.scheduled_time.id_for_label }}">Anchor Time (first dose)</label>
+                {{ form.scheduled_time }}
+            </div>
+
+            <div class="field-row">
+                <div class="field">
+                    <label for="{{ form.user.id_for_label }}">Patient *</label>
+                    {{ form.user }}
+                </div>
+                <div class="field">
+                    <label for="{{ form.rfid_uid.id_for_label }}">UID</label>
+                    {{ form.rfid_uid }}
+                </div>
+            </div>
+
+            <div class="field">
+                <label for="{{ form.container.id_for_label }}">Container Assignment</label>
+                {{ form.container }}
+            </div>
+
+            <div class="field-checkbox">
+                {{ form.ready }}
+                <label for="{{ form.ready.id_for_label }}">Ready</label>
+            </div>
+
+            <!-- Form errors -->
+            {% if form.errors %}
+            <div class="alert-danger" style="margin-top:16px;">
+                {% for field in form %}{% if field.errors %}<strong>{{ field.label }}:</strong> {{ field.errors|join:", " }}<br>{% endif %}{% endfor %}
+                {% if form.non_field_errors %}<strong>Error:</strong> {{ form.non_field_errors|join:", " }}{% endif %}
+            </div>
+            {% endif %}
+
+            <button type="submit" id="save-btn" {% if not mcu_connected %}disabled{% endif %}>Save Changes</button>
+        </div>
+
+    </form>
+</div>
+
+<script>
+    const COMPARTMENTS = {{ compartments_json|safe }};
+
+    const containerSelect   = document.getElementById('container-select');
+    const pidInput          = document.getElementById('prescription_id');
+    const containerNumInput = document.getElementById('container-num-input');
+    const fieldsDiv         = document.getElementById('prescription-fields');
+    const saveBtn           = document.getElementById('save-btn');
+    const dpd               = document.getElementById('id_doses_per_day');
+
+    const DEFAULT_LABELS = ['Morning', 'Afternoon', 'Evening', 'Night'];
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    function setValue(id, value) {
+        const el = document.getElementById(id);
+        if (el) el.value = (value !== null && value !== undefined) ? value : '';
+    }
+    function setChecked(id, checked) {
+        const el = document.getElementById(id);
+        if (el) el.checked = !!checked;
+    }
+
+    // Format total minutes → "HH:MM"
+    function minsToTime(mins) {
+        const m = ((mins % 1440) + 1440) % 1440;
+        return String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0');
+    }
+
+    // Return current time values from rendered rows
+    function currentDoseTimes() {
+        return Array.from(document.querySelectorAll('.dose-time-row')).map(row => ({
+            time:  row.querySelector('.dt-time').value,
+            label: row.querySelector('.dt-label').value,
+        }));
+    }
+
+    // Re-number "Dose N" labels and rename fields after add/remove
+    function reindex() {
+        document.querySelectorAll('.dose-time-row').forEach((row, i) => {
+            row.querySelector('.dose-num').textContent = `Dose ${i + 1}`;
+            row.querySelector('.dt-time').name  = `dose_time_${i + 1}`;
+            row.querySelector('.dt-label').name = `dose_label_${i + 1}`;
+        });
+        dpd.value = document.querySelectorAll('.dose-time-row').length;
+    }
+
+    // ── Core render ───────────────────────────────────────────────────────────
+
+    function renderDoseTimes(existing) {
+        // existing: [{time, label}, …]  (may be empty for a new prescription)
+        const list = document.getElementById('dose-times-list');
+        list.innerHTML = '';
+
+        if (existing.length === 0) {
+            // Bootstrap a single default row
+            existing = [{ time: '08:00', label: '' }];
+        }
+
+        existing.forEach((dt, i) => addRow(dt.time, dt.label, i + 1));
+        dpd.value = existing.length;
+    }
+
+    function addRow(timeValue, labelValue, index) {
+        const list  = document.getElementById('dose-times-list');
+        const count = list.querySelectorAll('.dose-time-row').length;
+        const n     = index || count + 1;
+
+        // If no time given, auto-space based on existing first row time
+        if (!timeValue) {
+            const rows = list.querySelectorAll('.dose-time-row');
+            let firstMins = 8 * 60;
+            if (rows.length > 0) {
+                const v = rows[0].querySelector('.dt-time').value;
+                if (v) {
+                    const [h, m] = v.split(':').map(Number);
+                    firstMins = h * 60 + m;
+                }
+            }
+            const total = count + 1;
+            timeValue = minsToTime(firstMins + count * Math.round(1440 / total));
+        }
+
+        if (!labelValue && labelValue !== '') {
+            labelValue = DEFAULT_LABELS[count] || `Dose ${n}`;
+        }
+
+        const row = document.createElement('div');
+        row.className = 'dose-time-row';
+        row.style.cssText = 'display:grid;grid-template-columns:80px 130px 1fr 34px;gap:8px;align-items:center;margin-bottom:6px;';
+        row.innerHTML = `
+            <span class="dose-num" style="font-size:.9em;color:#333;font-weight:600;">Dose ${n}</span>
+            <input type="time" name="dose_time_${n}" class="dt-time"
+                   value="${timeValue}"
+                   style="padding:6px 8px;border:1px solid #ced4da;border-radius:4px;font-size:.9em;">
+            <input type="text" name="dose_label_${n}" class="dt-label"
+                   value="${labelValue}"
+                   placeholder="e.g. Morning"
+                   style="padding:6px 8px;border:1px solid #ced4da;border-radius:4px;font-size:.9em;">
+            <button type="button" class="remove-dose-btn"
+                    title="Remove this dose"
+                    style="padding:4px 8px;background:#fff0f0;color:#c0392b;border:1px solid #f5c6cb;border-radius:4px;font-size:1em;cursor:pointer;line-height:1;">×</button>
+        `;
+
+        row.querySelector('.remove-dose-btn').addEventListener('click', function () {
+            const allRows = document.querySelectorAll('.dose-time-row');
+            if (allRows.length <= 1) return;  // keep at least 1 dose
+            row.remove();
+            reindex();
+        });
+
+        list.appendChild(row);
+    }
+
+    // ── Add Dose button ───────────────────────────────────────────────────────
+
+    document.getElementById('add-dose-btn').addEventListener('click', function () {
+        addRow('', '', null);
+        reindex();
+    });
+
+    // ── Container select ──────────────────────────────────────────────────────
+
+    containerSelect.addEventListener('change', function () {
+        const num   = parseInt(this.value, 10);
+        const entry = COMPARTMENTS.find(c => c.container === num);
+        if (!entry) return;
+
+        fieldsDiv.style.display = 'block';
+        containerNumInput.value = num;
+
+        if (entry.data) {
+            const d = entry.data;
+            pidInput.value       = d.id;
+            saveBtn.textContent  = 'Save Changes';
+
+            setValue('id_medication_name',    d.medication_name);
+            setValue('id_dosage',             d.dosage);
+            setValue('id_dose_count',         d.dose_count);
+            setValue('id_stock_count',        d.stock_count);
+            setValue('id_add_stock',          d.add_stock);
+            setValue('id_instructions',       d.instructions);
+            setValue('id_prescribing_doctor', d.prescribing_doctor);
+            setValue('id_start_date',         d.start_date);
+            setValue('id_end_date',           d.end_date);
+            setValue('id_scheduled_time',     d.scheduled_time);
+            setValue('id_user',               d.user);
+            setValue('id_rfid_uid',           d.rfid_uid || '');
+            setValue('id_container',          d.container !== null ? d.container : '');
+            setChecked('id_ready',            d.ready);
+            renderDoseTimes(d.dose_times || []);
+        } else {
+            pidInput.value       = '';
+            saveBtn.textContent  = 'Add Prescription';
+
+            setValue('id_medication_name',    '');
+            setValue('id_dosage',             '');
+            setValue('id_dose_count',         1);
+            setValue('id_stock_count',        0);
+            setValue('id_add_stock',          0);
+            setValue('id_instructions',       '');
+            setValue('id_prescribing_doctor', '');
+            setValue('id_start_date',         '');
+            setValue('id_end_date',           '');
+            setValue('id_scheduled_time',     '');
+            setValue('id_user',               '');
+            setValue('id_rfid_uid',           '');
+            setValue('id_container',          '');
+            setChecked('id_ready',            false);
+            renderDoseTimes([]);
+        }
+    });
+</script>
+
+</body>
+</html>

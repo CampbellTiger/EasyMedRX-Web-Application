@@ -1,11 +1,16 @@
+import os
+import time
+import json as _json
+from datetime import datetime
+
 from django.contrib.admin.views.decorators import staff_member_required
 from django.contrib.auth import authenticate
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.models import User
 from django.shortcuts import render, redirect, get_object_or_404
 from django.utils.dateparse import parse_datetime
-from .models import Prescription, ErrorLog, PrescriptionLogging, UserProfile
-from .forms import PrescriptionForm
+from .models import Prescription, ErrorLog, PrescriptionLogging, UserProfile, NotificationPreference, DoseTime
+from .forms import PrescriptionForm, CompartmentEditForm, NotificationPreferenceForm, DoseTimeFormSet
 import calendar
 from django.utils.timezone import now, make_aware, is_naive, localtime
 from django.http import JsonResponse
@@ -13,14 +18,127 @@ from django.views.decorators.csrf import csrf_exempt
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 
+_BASE_DIR          = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_MCU_TRAFFIC_LOG   = os.path.join(_BASE_DIR, 'logs', 'mcu_traffic.log')
+_MCU_HEARTBEAT_FILE = os.path.join(_BASE_DIR, 'logs', 'mcu_heartbeat.txt')
+
+MAX_STOCK = 30
+
+
+def _mcu_log(direction, data):
+    """Append one traffic entry to mcu_traffic.log."""
+    try:
+        ts   = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        body = _json.dumps(data, indent=2) if isinstance(data, dict) else repr(data)
+        entry = f"[{ts}] {direction}\n{body}\n{'─' * 60}\n"
+        os.makedirs(os.path.dirname(_MCU_TRAFFIC_LOG), exist_ok=True)
+        with open(_MCU_TRAFFIC_LOG, 'a') as f:
+            f.write(entry)
+    except Exception:
+        pass
+
+
+def _mcu_resp(data, status=200):
+    """Log the outgoing response then return a JsonResponse."""
+    _mcu_log('SERVER → MCU', data)
+    return JsonResponse(data, status=status)
+
+
+# ── MCU connection flag ───────────────────────────────────────────────────────
+# Uses a small file (logs/mcu_heartbeat.txt) containing a Unix timestamp.
+# Written on every POST; read when checking connection status.
+# File I/O is the same mechanism already proven by mcu_traffic.log.
+
+def _is_mcu_connected():
+    """Return True if the MCU sent a request within the last 60 seconds."""
+    try:
+        with open(_MCU_HEARTBEAT_FILE) as f:
+            last = float(f.read().strip())
+        return (time.time() - last) < 60
+    except Exception:
+        return False
+
+
+def _record_mcu_heartbeat():
+    """Write the current Unix timestamp to the heartbeat file."""
+    was_connected = _is_mcu_connected()
+    try:
+        os.makedirs(os.path.dirname(_MCU_HEARTBEAT_FILE), exist_ok=True)
+        with open(_MCU_HEARTBEAT_FILE, 'w') as f:
+            f.write(str(time.time()))
+    except Exception:
+        pass
+    if not was_connected:
+        _mcu_log('MCU STATUS', {
+            'status':  'CONNECTED',
+            'message': 'MCU is now sending requests',
+        })
+
+
 from .consumers import notify_user
+
+
+def _mask(text, keep=2):
+    """Return first `keep` chars + X padding for notification privacy."""
+    if not text:
+        return text
+    return text[:keep] + 'X' * max(0, len(text) - keep)
 
 
 @login_required
 def prescription_ready_view(request, prescription_id):
     prescription = get_object_or_404(Prescription, id=prescription_id)
-    notify_user(prescription.user_id, f"Prescription {prescription.medication_name} is ready!")
+    notify_user(prescription.user_id, f"Prescription {_mask(prescription.medication_name)} is ready!")
     return JsonResponse({"status": "notification sent", "id": prescription.id})
+
+
+@staff_member_required
+def test_notification(request, kind):
+    """Trigger a notification type immediately. Staff only. Used for testing via browser console."""
+    from .tasks import (
+        send_due_prescription_notifications,
+        send_daily_report,
+        send_weekly_report,
+    )
+
+    if kind == 'websocket':
+        # Send a test WebSocket push to the requesting user
+        notify_user(request.user.id, "EasyMedRX test — WebSocket notification working!")
+        return JsonResponse({"status": "websocket sent", "user": request.user.username})
+
+    if kind == 'desktop':
+        # WebSocket message that the client will show as a desktop notification
+        notify_user(request.user.id, "EasyMedRX test — Desktop notification working!")
+        return JsonResponse({"status": "desktop triggered via websocket"})
+
+    if kind == 'email-reminder':
+        # Force the reminder task to run right now
+        result = send_due_prescription_notifications.apply()
+        return JsonResponse({"status": "email-reminder task run", "result": str(result.result)})
+
+    if kind == 'daily-report':
+        result = send_daily_report.apply()
+        return JsonResponse({"status": "daily report task run", "result": str(result.result)})
+
+    if kind == 'weekly-report':
+        result = send_weekly_report.apply()
+        return JsonResponse({"status": "weekly report task run", "result": str(result.result)})
+
+    return JsonResponse({"error": f"Unknown notification kind: {kind}"}, status=400)
+
+
+@login_required
+def notification_preferences(request):
+    prefs, _ = NotificationPreference.objects.get_or_create(user=request.user)
+    if request.method == 'POST':
+        form = NotificationPreferenceForm(request.POST, instance=prefs)
+        if form.is_valid():
+            form.save()
+            return redirect('/notifications/preferences/?saved=1')
+    else:
+        form = NotificationPreferenceForm(instance=prefs)
+    return render(request, 'prescriptions/notification_preferences.html', {'form': form})
+
 
 COLOR_PALETTE = [
     "#1E90FF",  # blue
@@ -32,63 +150,51 @@ COLOR_PALETTE = [
 ]
 
 
-def _serialize_user_prescriptions(user):
-    """Return a user dict with all their prescriptions for UpdateMCU admin responses.
-    Relies on the caller having used prefetch_related('prescriptions') so that
-    user.prescriptions.all() hits the prefetch cache instead of the database."""
-    return {
-        'username':    user.username,
-        'first_name':  user.first_name,
-        'last_name':   user.last_name,
-        'prescriptions': [
-            {
-                'id':                p.id,
-                'medication_name':   p.medication_name,
-                'dosage':            p.dosage,
-                'dose_count':        p.dose_count,
-                'stock_count':       p.stock_count,
-                'frequency':         p.frequency,
-                'instructions':      p.instructions,
-                'prescribing_doctor': p.prescribing_doctor,
-                'start_date':        p.start_date.isoformat(),
-                'end_date':          p.end_date.isoformat() if p.end_date else None,
-                'scheduled_time':    p.scheduled_time.strftime('%H:%M'),
-                'time_window':       _scheduled_seconds(p),
-            }
-            for p in user.prescriptions.all()
-        ],
+
+def _flat_mcu_response(uid, user, prescriptions, request_data=None):
+    """Build the flat script0-3 / dose0-3 / stock0-3 / window0-3 response the MCU expects.
+
+    Starts from a copy of request_data so any field the MCU sent (pword, time,
+    device1-4, etc.) is echoed back unchanged.  DB-authoritative fields are then
+    overlaid on top.  window{i} is the number of pills to dispense (dose_count).
+    """
+    # Map container number (1-4) → prescription.  container 1 = script0, etc.
+    by_container = {
+        p.container: p
+        for p in prescriptions
+        if p.container in (1, 2, 3, 4)
     }
 
-
-def _scheduled_seconds(prescription):
-    """Return the prescription's scheduled time-of-day as seconds since midnight (int32).
-    The MCU uses this value to know when to dispense each medication."""
-    t = prescription.scheduled_time
-    return t.hour * 3600 + t.minute * 60
-
-
-def _flat_mcu_response(uid, user, prescriptions):
-    """Build the flat script0-3 / dose0-3 / stock0-3 / time0-3 response the MCU expects."""
-    slots = list(prescriptions[:4])  # MCU supports up to 4 slots
-    resp  = {
+    # Echo everything the MCU sent, then override with server-authoritative values.
+    resp = dict(request_data) if request_data else {}
+    resp.update({
         'type':  'UpdateMCU',
         'uid':   uid,
         'user':  user.username,
         'email': user.email,
         'phone': getattr(getattr(user, 'profile', None), 'phone', ''),
-    }
+    })
     for i in range(4):
-        if i < len(slots):
-            p = slots[i]
-            resp[f'script{i}'] = p.medication_name
-            resp[f'dose{i}']   = p.dose_count
-            resp[f'stock{i}']  = p.stock_count
-            resp[f'time{i}']   = _scheduled_seconds(p)
+        p = by_container.get(i + 1)   # container 1 → slot/index 0
+        if p:
+            resp[f'script{i}']  = p.medication_name
+            resp[f'dose{i}']    = p.dose_count
+            resp[f'stock{i}']   = p.stock_count
+            resp[f'window{i}']  = p.dose_count  # pills to dispense at this moment
+            # Log the dispense instruction sent to the MCU
+            if p.dose_count > 0:
+                PrescriptionLogging.objects.create(
+                    prescription=p,
+                    user=user,
+                    event_type='DISPENSE_SENT',
+                    scheduled_time=now(),
+                    quantity=p.dose_count,
+                )
         else:
-            resp[f'script{i}'] = ''
-            resp[f'dose{i}']   = 0
-            resp[f'stock{i}']  = 0
-            resp[f'time{i}']   = 0
+            resp[f'script{i}']  = ''
+            resp[f'dose{i}']    = 0
+            resp[f'stock{i}']   = 0
+            resp[f'window{i}']  = 0
     return resp
 
 
@@ -120,107 +226,54 @@ def _parse_event_timestamp(ts_string):
     return dt
 
 @csrf_exempt
-@api_view(['POST'])
 def device_push(request):
-    """
-    Single endpoint for all MCU → web app communication.
+    """Single endpoint for all MCU → web app communication."""
+    if request.method != 'POST':
+        return _mcu_resp({'error': 'POST required'}, status=405)
 
-    Every request must include:
-        uid   — device identifier  (MCU sends lowercase; UID uppercase also accepted)
-        type  — message type       (MCU sends lowercase; Type uppercase also accepted)
-        user  — username for authentication
-        pword — password for authentication
+    _record_mcu_heartbeat()   # raise flag as soon as any POST arrives
 
-    ── type: UpdateMCU ─────────────────────────────────────────────────────
-    MCU requests a data sync. Authenticates the user and returns that user's
-    prescriptions in the flat MCU format (script0-3, dose0-3, stock0-3,
-    time0-3). Staff/admin credentials return all users in nested format.
+    raw_body = request.body
 
-    MCU sends:
-        {
-            "type":    "UpdateMCU",
-            "uid":     "11223344",
-            "user":    "Bugs",
-            "pword":   "Bunny",
-            "email":   "DaphyDuck@gmail.com",
-            "phone":   "904-393-9032",
-            "script0": "Tic-Tacs",  "dose0": 10,  "stock0": 5000,
-            "script1": "Gobstoppers","dose1": 10, "stock1": 1000,
-            "script2": "Atomic Fireballs","dose2":100,"stock2":3000,
-            "script3": "Skittles",  "dose3": 70,  "stock3": 170,
-            "time":    1711234567
-        }
+    # Parse JSON body directly — no DRF overhead, tolerates null bytes in
+    # Content-Type and minor body corruption from SLFS roundtrip.
+    try:
+        data = _json.loads(raw_body.decode('utf-8'))
+    except Exception:
+        try:
+            text = raw_body.decode('utf-8', errors='ignore')
+            data = _json.loads(text[:text.rfind('}') + 1])
+        except Exception:
+            data = {}
 
-    Web app returns (regular user):
-        {
-            "type": "UpdateMCU", "uid": "11223344", "user": "Bugs",
-            "email": "...", "phone": "...",
-            "script0": "Tic-Tacs",  "dose0": 10, "stock0": 5000, "time0": 28800,
-            "script1": "Gobstoppers","dose1": 10, "stock1":1000,  "time1": 52200,
-            "script2": "",          "dose2":  0, "stock2":    0, "time2":     0,
-            "script3": "",          "dose3":  0, "stock3":    0, "time3":     0
-        }
+    uid        = data.get('uid') or data.get('UID')
+    event_type = data.get('type') or data.get('Type')
+    username   = data.get('user')
+    password   = data.get('pword')
+    email      = data.get('email', '')
+    phone      = data.get('phone', '')
 
-    Web app returns (staff/admin credentials — admin mode):
-        {
-            "status": "ok", "uid": "...", "admin": true,
-            "users": [ { "username":..., "prescriptions": [...] }, ... ]
-        }
+    _mcu_log('MCU → SERVER', data)
 
-    ── type: ErrorWebApp ───────────────────────────────────────────────────
-    MCU sends when it encounters a device error. Web app logs it, notifies
-    the user, and returns confirmation.
-
-    MCU sends:
-        {
-            "type":    "ErrorWebApp",
-            "uid":     "11223344",
-            "user":    "plaintext_username",
-            "pword":   "plaintext_password",
-            "email":   "helloworld@gmail.com",
-            "phone":   "000-000-0000",
-            "message": "Unable to connect to web application"
-        }
-
-    Web app returns:
-        { "status": "confirmed", "uid": "...", "type": "ErrorWebApp", "message": "Error logged" }
-
-    ── type: updateWebApp ──────────────────────────────────────────────────
-    MCU sends batched offline events. Web app logs each event and confirms.
-
-    MCU sends:
-        {
-            "type": "updateWebApp", "uid": "...",
-            "user": "...", "pword": "...",
-            "events": [
-                { "user": "john_doe", "event_type": "TAKEN",
-                  "medication_name": "Metformin", "timestamp": "2026-03-21T08:05:00" },
-                { "user": "jane_doe", "event_type": "MISSED",
-                  "medication_name": "Lisinopril","timestamp": "2026-03-21T12:00:00" }
-            ]
-        }
-
-    Web app returns:
-        { "status": "confirmed", "uid": "...", "processed": 2, "failed": 0, "message": "All events logged" }
-    """
-    # Accept both lowercase (MCU native) and uppercase (legacy) key names
-    uid        = request.data.get('uid') or request.data.get('UID')
-    event_type = request.data.get('type') or request.data.get('Type')
-    username   = request.data.get('user')
-    password   = request.data.get('pword')
-    email      = request.data.get('email', '')
-    phone      = request.data.get('phone', '')
-
-    if not uid or not event_type:
-        return Response({'error': 'uid and type are required'}, status=400)
+    if not event_type:
+        return _mcu_resp({'error': 'type is required'}, status=400)
 
     event_lower = event_type.lower()
 
-    # Look up user by username (no password check)
+    # Look up user by username (case-insensitive to tolerate MCU capitalisation).
+    # Fallback: look up by RFID UID stored in UserProfile.
     try:
-        auth_user = User.objects.get(username=username) if username else None
+        auth_user = User.objects.get(username__iexact=username) if username else None
     except User.DoesNotExist:
         auth_user = None
+
+    if auth_user is None and uid:
+        try:
+            auth_user = UserProfile.objects.select_related('user').get(
+                rfid_uid__iexact=uid
+            ).user
+        except UserProfile.DoesNotExist:
+            pass
 
     # # Update email / phone from device if supplied. Dont need right now. MCU shouldn't update web application's stuff?
     # if auth_user:
@@ -229,38 +282,79 @@ def device_push(request):
     # ── UpdateMCU ────────────────────────────────────────────────────────────
     if event_lower == 'updatemcu':
         if not auth_user:
-            return Response({'status': 'error', 'detail': 'unknown user'}, status=400)
-        # Update any stock counts the MCU reports for this user's prescriptions
+            return _mcu_resp({'status': 'error', 'detail': 'unknown user'}, status=400)
+        prescriptions = Prescription.objects.filter(user=auth_user).order_by('scheduled_time')
+        return _mcu_resp(_flat_mcu_response(uid, auth_user, prescriptions, data), status=200)
+
+    # ── updateMCUProfile ─────────────────────────────────────────────────────
+    # MCU sends this on every RFID scan to sync prescription data.
+    # If no username is supplied, look up the user by their RFID UID
+    # (first-time registration via requestNewProfile on the MCU).
+    elif event_lower == 'updatemcuprofile':
+        if not auth_user:
+            return _mcu_resp({'status': 'error', 'detail': 'unknown user'}, status=400)
+
         prescriptions = list(
             Prescription.objects.filter(user=auth_user).order_by('scheduled_time')
         )
+        resp = _flat_mcu_response(uid, auth_user, prescriptions, data)
+        resp['type'] = 'updateMCUProfile'
+        return _mcu_resp(resp, status=200)
+
+    # ── trustedUIDs ───────────────────────────────────────────────────────────
+    # MCU requests the RFID whitelist. Returns up to 8 UIDs from UserProfile.rfid_uid.
+    elif event_lower == 'trusteduids':
+        uid_list = list(
+            UserProfile.objects.exclude(rfid_uid='').values_list('rfid_uid', flat=True)[:8]
+        )
+        resp = {'type': 'trustedUIDs', 'uid': uid or ''}
+        for i in range(8):
+            resp[f'uid{i}'] = uid_list[i] if i < len(uid_list) else ''
+        return _mcu_resp(resp, status=200)
+
+    # ── updateWebAppStock / updateMCUStock ────────────────────────────────────
+    # MCU reports current pill stock for each compartment. The response always
+    # uses the DB's canonical name and stock (web app is authoritative on names).
+    # If the MCU sends an old name after a rename, the slot-index fallback ensures
+    # the response still carries the updated name and correct stock.
+    elif event_lower in ('updatewebappstock', 'updatemcustock'):
+        resp         = {'type': 'updateWebAppStock'}
+        # Container-keyed map: container 1 = slot 0, etc.
+        by_container = {
+            p.container: p
+            for p in Prescription.objects.all()
+            if p.container in (1, 2, 3, 4)
+        }
+
         for i in range(4):
-            stock_val = request.data.get(f'stock{i}')
-            if stock_val is not None and i < len(prescriptions):
-                prescriptions[i].stock_count = int(stock_val)
-                prescriptions[i].save(update_fields=['stock_count'])
+            raw      = data.get(f'medicine{i}')
+            medicine = raw if isinstance(raw, str) and raw.strip() else ''
+            stock    = data.get(f'stock{i}')
 
-        if auth_user and (auth_user.is_staff or auth_user.is_superuser):
-            # Admin mode — return all non-staff users with full prescription detail
-            users = (
-                User.objects
-                .filter(prescriptions__isnull=False, is_staff=False, is_superuser=False)
-                .prefetch_related('prescriptions')
-                .distinct()
-            )
-            return Response({
-                'status': 'ok',
-                'uid':    uid,
-                'admin':  True,
-                'users':  [_serialize_user_prescriptions(u) for u in users],
-            }, status=200)
+            # Container is the authoritative slot — always look up by container.
+            # Never look up by medicine name: the MCU may still know the old name
+            # after a rename, which would match the wrong prescription entirely.
+            p = by_container.get(i + 1)
 
-        # Regular user — return flat MCU format
-        return Response(_flat_mcu_response(uid, auth_user, prescriptions), status=200)
+            if p and stock is not None:
+                if medicine.lower() == p.medication_name.lower():
+                    # Names match — MCU is in sync. Apply add_stock bonus then reset, capped at MAX_STOCK.
+                    p.stock_count = min(int(stock) + p.add_stock, MAX_STOCK)
+                    p.add_stock   = 0
+                    p.save(update_fields=['stock_count', 'add_stock'])
+                # If names don't match the MCU is stale; return DB's name so it updates.
 
-    # ── ErrorWebApp ──────────────────────────────────────────────────────────
-    elif event_lower == 'errorwebapp':
-        message = request.data.get('message', 'No message provided')
+            resp[f'medicine{i}'] = p.medication_name if p else medicine
+            resp[f'stock{i}']    = p.stock_count if p else 0
+
+        return _mcu_resp(resp, status=200)
+
+    # ── Error ─────────────────────────────────────────────────────────────────
+    # MCU sends {"type":"Error", "uid":..., "message":..., "time":...} for
+    # device faults. No auth required. Response must include return_code=0
+    # so flushErrorBuffer() on the MCU knows to delete the acknowledged file.
+    elif event_lower == 'error':
+        message = data.get('message', 'No message provided')
         ErrorLog.objects.create(
             device_id=uid,
             error_type='DEVICE_ERROR',
@@ -269,19 +363,38 @@ def device_push(request):
         )
         if auth_user:
             notify_user(auth_user.id, f"[Device Error] {message}")
-        return Response({
-            'status':  'confirmed',
-            'uid':     uid,
-            'type':    'ErrorWebApp',
-            'message': 'Error logged',
+        return _mcu_resp({
+            'type':        'Error',
+            'uid':         uid,
+            'return_code': 0,
+            'message':     'Error logged',
+        }, status=200)
+
+    # ── ErrorWebApp ──────────────────────────────────────────────────────────
+    elif event_lower == 'errorwebapp':
+        message = data.get('message', 'No message provided')
+        ErrorLog.objects.create(
+            device_id=uid,
+            error_type='DEVICE_ERROR',
+            detail=message,
+            user=auth_user,
+        )
+        if auth_user:
+            notify_user(auth_user.id, f"[Device Error] {message}")
+        return _mcu_resp({
+            'status':      'confirmed',
+            'uid':         uid,
+            'type':        'ErrorWebApp',
+            'return_code': 0,
+            'message':     'Error logged',
         }, status=200)
 
     # ── updateWebApp ─────────────────────────────────────────────────────────
     elif event_lower == 'updatewebapp':
-        events = request.data.get('events')
+        events = data.get('events')
 
         if not isinstance(events, list) or len(events) == 0:
-            return Response({'error': "'events' must be a non-empty list"}, status=400)
+            return _mcu_resp({'error': "'events' must be a non-empty list"}, status=400)
 
         processed = 0
         failed    = 0
@@ -359,7 +472,7 @@ def device_push(request):
             else f"{processed} of {total} events logged; {failed} failed"
         )
 
-        return Response({
+        return _mcu_resp({
             'status':    'confirmed',
             'uid':       uid,
             'type':      'updateWebApp',
@@ -371,33 +484,63 @@ def device_push(request):
 
     # ── Unknown type ─────────────────────────────────────────────────────────
     else:
-        return Response({
+        return _mcu_resp({
             'error':           f"Unknown type '{event_type}'",
-            'supported_types': ['UpdateMCU', 'ErrorWebApp', 'updateWebApp'],
+            'supported_types': ['UpdateMCU', 'updateMCUProfile', 'trustedUIDs',
+                                'updateWebAppStock', 'Error', 'ErrorWebApp', 'updateWebApp'],
         }, status=400)
 
 
 def prescription_events(request):
-    prescriptions = Prescription.objects.select_related('user').all()
+    from datetime import timedelta
+
+    # Auto-create a DoseTime from scheduled_time for any prescription missing one
+    for p in Prescription.objects.filter(dose_times__isnull=True):
+        DoseTime.objects.create(
+            prescription=p,
+            time_of_day=localtime(p.scheduled_time).time(),
+            label='',
+        )
+
+    dose_times = (
+        DoseTime.objects
+        .select_related('prescription__user')
+        .all()
+        .order_by('prescription__user_id', 'time_of_day')
+    )
+
     events      = []
     user_colors = {}
     color_index = 0
 
-    for prescription in prescriptions:
-        uid = prescription.user_id
+    for dt in dose_times:
+        p   = dt.prescription
+        uid = p.user_id
         if uid not in user_colors:
             user_colors[uid] = COLOR_PALETTE[color_index % len(COLOR_PALETTE)]
             color_index += 1
 
+        end_recur = (
+            (p.end_date + timedelta(days=1)).isoformat()
+            if p.end_date else None
+        )
+        label_suffix = f' ({dt.label})' if dt.label else ''
+
         events.append({
-            'title':        prescription.medication_name,
-            'instructions': prescription.instructions,
-            'user':         f'{prescription.user.first_name} {prescription.user.last_name}',
-            'start':        prescription.start_date.isoformat(),
-            'end':          prescription.end_date.isoformat() if prescription.end_date else None,
-            'time':         localtime(prescription.scheduled_time).strftime('%H:%M'),
-            'allDay':       True,
-            'color':        user_colors[uid],
+            'title':      p.medication_name + label_suffix,
+            'startTime':  dt.time_of_day.strftime('%H:%M'),
+            'duration':   '00:30',
+            'startRecur': p.start_date.isoformat(),
+            'endRecur':   end_recur,
+            'allDay':     False,
+            'color':      user_colors[uid],
+            'extendedProps': {
+                'instructions': p.instructions,
+                'user':         f'{p.user.first_name} {p.user.last_name}'.strip() or p.user.username,
+                'dose':         f'{p.dose_count} pill(s)',
+                'stock':        p.stock_count,
+                'time':         dt.time_of_day.strftime('%I:%M %p'),
+            },
         })
     return JsonResponse(events, safe=False)
 
@@ -450,4 +593,213 @@ def prescription_create(request):
         form = PrescriptionForm()
 
     return render(request, 'prescriptions/form.html', {'form': form})
+
+
+@staff_member_required
+def mcu_log_view(request):
+    """Display the MCU traffic log parsed into individual entries."""
+    entries = []
+    separator = '─' * 60
+
+    try:
+        with open(_MCU_TRAFFIC_LOG, encoding='utf-8', errors='replace') as f:
+            raw = f.read()
+
+        # Split on separator lines; each block is one log entry.
+        blocks = raw.split(separator)
+        for block in blocks:
+            block = block.strip()
+            if not block:
+                continue
+
+            lines = block.splitlines()
+            if not lines:
+                continue
+
+            # First line: "[TIMESTAMP] DIRECTION"
+            header = lines[0].strip()
+            body   = '\n'.join(lines[1:]).strip()
+
+            timestamp = ''
+            direction = header
+            if header.startswith('['):
+                close = header.find(']')
+                if close != -1:
+                    timestamp = header[1:close]
+                    direction = header[close + 1:].strip()
+
+            # Attempt to pretty-print the body as JSON
+            try:
+                parsed   = _json.loads(body)
+                body_fmt = _json.dumps(parsed, indent=2)
+                is_json  = True
+            except Exception:
+                body_fmt = body
+                is_json  = False
+
+            entries.append({
+                'timestamp': timestamp,
+                'direction': direction,
+                'body':      body_fmt,
+                'is_json':   is_json,
+            })
+
+    except FileNotFoundError:
+        pass
+
+    # Newest entries first
+    entries.reverse()
+
+    return render(request, 'prescriptions/mcu_log.html', {
+        'entries': entries,
+        'log_path': _MCU_TRAFFIC_LOG,
+    })
+
+
+@staff_member_required
+def rename_medication(request):
+    """Full prescription edit form gated by MCU connection (admin only)."""
+    from django.contrib.auth.models import User as _User
+    from django.utils.timezone import localtime as _localtime
+
+    mcu_connected = _is_mcu_connected()
+    success = None
+    form    = CompartmentEditForm()  # unbound — populated client-side via JS
+
+    if request.method == 'POST':
+        if not mcu_connected:
+            pass  # warning shown in template; form stays unbound
+        else:
+            prescription_id = request.POST.get('prescription_id', '').strip()
+            container_num   = int(request.POST.get('container_num', 0) or 0)
+
+            if prescription_id:
+                # Edit existing prescription
+                p        = get_object_or_404(Prescription, id=prescription_id)
+                old_name = p.medication_name
+                form     = CompartmentEditForm(request.POST, instance=p)
+                action   = 'updated'
+            elif container_num:
+                # Create new prescription for an empty container
+                old_name = None
+                form     = CompartmentEditForm(request.POST)
+                action   = 'created'
+            else:
+                form = CompartmentEditForm()
+
+            if form and container_num and form.is_bound:
+                if form.is_valid():
+                    saved = form.save(commit=False)
+                    saved.container = container_num
+                    saved.save()
+                    form.save_m2m()
+
+                    # Sync DoseTime records from POST data
+                    import datetime as _dt
+                    doses_per_day = saved.doses_per_day or 1
+                    existing_dose_times = list(saved.dose_times.order_by('order'))
+
+                    # Calculate evenly spaced fallback times from the first dose's time
+                    first_time_str = request.POST.get('dose_time_1', '').strip()
+                    if not first_time_str and existing_dose_times:
+                        t = existing_dose_times[0].time_of_day
+                        first_time_str = t.strftime('%H:%M')
+                    if first_time_str:
+                        fh, fm = map(int, first_time_str.split(':'))
+                        first_mins = fh * 60 + fm
+                    else:
+                        first_mins = 0
+                    interval = round(24 * 60 / doses_per_day)
+
+                    for i in range(1, doses_per_day + 1):
+                        time_val  = request.POST.get(f'dose_time_{i}', '').strip()
+                        label_val = request.POST.get(f'dose_label_{i}', '').strip()
+                        if not time_val:
+                            mins = (first_mins + (i - 1) * interval) % (24 * 60)
+                            time_val = f'{mins // 60:02d}:{mins % 60:02d}'
+                        if i <= len(existing_dose_times):
+                            dt_obj = existing_dose_times[i - 1]
+                            dt_obj.time_of_day = time_val
+                            dt_obj.label       = label_val
+                            dt_obj.save(update_fields=['time_of_day', 'label'])
+                        else:
+                            DoseTime.objects.create(
+                                prescription=saved,
+                                time_of_day=time_val,
+                                label=label_val,
+                            )
+                    # Remove extras if doses_per_day was reduced
+                    saved.dose_times.order_by('-time_of_day')[doses_per_day:].delete()
+
+                    # Save RFID UID to the patient's UserProfile
+                    rfid_uid = form.cleaned_data.get('rfid_uid', '').strip()
+                    profile, _ = UserProfile.objects.get_or_create(user=saved.user)
+                    profile.rfid_uid = rfid_uid
+                    profile.save(update_fields=['rfid_uid'])
+                    _mcu_log('WEB EDIT', {
+                        'action':    action,
+                        'container': container_num,
+                        'old_name':  old_name,
+                        'new_name':  saved.medication_name,
+                        'stock':     saved.stock_count,
+                        'rfid_uid':  rfid_uid,
+                        'by':        request.user.username,
+                    })
+                    success = f'Container {container_num} — "{saved.medication_name}" {action}.'
+                    form = CompartmentEditForm()  # reset to unbound after success
+
+    # Build compartments by container number (1-4) — authoritative slot source.
+    by_container = {
+        p.container: p
+        for p in Prescription.objects.select_related('user__profile').all()
+        if p.container in (1, 2, 3, 4)
+    }
+    compartments = [
+        {'container': i, 'obj': by_container.get(i)}
+        for i in range(1, 5)
+    ]
+
+    # Serialize prescription data for JS filldown — one entry per compartment.
+    def _p_json(p):
+        if p is None:
+            return None
+        try:
+            rfid_uid = p.user.profile.rfid_uid
+        except Exception:
+            rfid_uid = ''
+        return {
+            'id':                 p.id,
+            'user':               p.user_id,
+            'rfid_uid':           rfid_uid,
+            'medication_name':    p.medication_name,
+            'dosage':             p.dosage,
+            'dose_count':         p.dose_count,
+            'stock_count':        p.stock_count,
+            'add_stock':          p.add_stock,
+            'doses_per_day':      p.doses_per_day,
+            'dose_times':         [
+                {'order': i + 1, 'time': dt.time_of_day.strftime('%H:%M'), 'label': dt.label}
+                for i, dt in enumerate(p.dose_times.order_by('time_of_day'))
+            ],
+            'instructions':       p.instructions,
+            'prescribing_doctor': p.prescribing_doctor,
+            'start_date':         p.start_date.isoformat() if p.start_date else '',
+            'end_date':           p.end_date.isoformat() if p.end_date else '',
+            'scheduled_time':     _localtime(p.scheduled_time).strftime('%Y-%m-%dT%H:%M') if p.scheduled_time else '',
+            'ready':              p.ready,
+            'container':          p.container,
+        }
+
+    compartments_json = _json.dumps([
+        {'container': c['container'], 'data': _p_json(c['obj'])}
+        for c in compartments
+    ])
+
+    return render(request, 'prescriptions/rename_medication.html', {
+        'compartments':      compartments,
+        'compartments_json': compartments_json,
+        'form':              form,
+        'mcu_connected':     mcu_connected,
+        'success':           success,
+    })
 

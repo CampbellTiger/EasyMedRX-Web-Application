@@ -18,4 +18,12 @@ app.conf.beat_schedule = {
         'task': 'prescriptions.tasks.reset_prescription_ready_flags',
         'schedule': crontab(hour=0, minute=0),  # runs at midnight
     },
+    'send-daily-report': {
+        'task': 'prescriptions.tasks.send_daily_report',
+        'schedule': crontab(hour=23, minute=0),  # runs at 11 PM daily
+    },
+    'send-weekly-report': {
+        'task': 'prescriptions.tasks.send_weekly_report',
+        'schedule': crontab(hour=23, minute=0, day_of_week=0),  # Sunday 11 PM
+    },
 }

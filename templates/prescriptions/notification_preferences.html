@@ -1,0 +1,123 @@
+{% load static %}
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Notification Preferences – EasyMedRX</title>
+    <style>
+        body  { font-family: Arial, sans-serif; margin: 40px; background: #f8f9fa; }
+        nav   { margin-bottom: 20px; }
+        nav a { margin-right: 12px; text-decoration: none; color: #1E90FF; }
+
+        h2 { margin-bottom: 4px; }
+        .subtitle { color: #666; font-size: .9em; margin-bottom: 28px; }
+
+        .card {
+            background: #fff;
+            border: 1px solid #dee2e6;
+            border-radius: 6px;
+            padding: 28px 32px;
+            max-width: 520px;
+        }
+
+        .toggle-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 0;
+            border-bottom: 1px solid #f0f0f0;
+        }
+        .toggle-row:last-of-type { border-bottom: none; }
+
+        .toggle-label { font-size: .95em; color: #333; }
+
+        /* Toggle switch */
+        .switch { position: relative; display: inline-block; width: 44px; height: 24px; }
+        .switch input { opacity: 0; width: 0; height: 0; }
+        .slider {
+            position: absolute; cursor: pointer;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: #ccc; border-radius: 24px;
+            transition: .2s;
+        }
+        .slider:before {
+            position: absolute; content: "";
+            height: 18px; width: 18px;
+            left: 3px; bottom: 3px;
+            background: white; border-radius: 50%;
+            transition: .2s;
+        }
+        input:checked + .slider { background: #1E90FF; }
+        input:checked + .slider:before { transform: translateX(20px); }
+
+        .save-btn {
+            margin-top: 24px;
+            padding: 10px 28px;
+            background: #1E90FF;
+            color: #fff;
+            border: none;
+            border-radius: 4px;
+            font-size: 1em;
+            cursor: pointer;
+        }
+        .save-btn:hover { background: #1278d4; }
+
+        .saved-msg {
+            display: none;
+            margin-top: 12px;
+            color: #28a745;
+            font-size: .9em;
+        }
+    </style>
+</head>
+<body>
+
+<nav>
+    <a href="{% url 'calendar' %}">Calendar</a>
+    {% if user.is_staff %}
+        <a href="/admin/">Management Area</a>
+        <a href="{% url 'rename_medication' %}">Edit Medication</a>
+        <a href="{% url 'mcu_log' %}">MCU Log</a>
+    {% endif %}
+    <a href="{% url 'notification_preferences' %}" style="color:#333; font-weight:bold;">Notifications</a>
+    {% if user.is_authenticated %}
+        <span style="color:#555; font-size:.9em; margin-left:8px;">Welcome, {{ user.username }}</span>
+    {% endif %}
+</nav>
+
+<h2>Notification Preferences</h2>
+<p class="subtitle">Choose which notifications you receive. Changes save immediately.</p>
+
+<form method="post" id="pref-form">
+    {% csrf_token %}
+    <div class="card">
+        {% for field in form %}
+        <div class="toggle-row">
+            <span class="toggle-label">{{ field.label }}</span>
+            <label class="switch">
+                {{ field }}
+                <span class="slider"></span>
+            </label>
+        </div>
+        {% endfor %}
+
+        <button type="submit" class="save-btn">Save preferences</button>
+        <p class="saved-msg" id="saved-msg">Preferences saved.</p>
+    </div>
+</form>
+
+<script>
+    // Replace default checkboxes with toggle-friendly inputs
+    document.querySelectorAll('.switch input[type=checkbox]').forEach(cb => {
+        cb.style.cssText = 'opacity:0;width:0;height:0;';
+    });
+
+    // Show inline confirmation after save (if redirected back with ?saved=1)
+    if (window.location.search.includes('saved')) {
+        document.getElementById('saved-msg').style.display = 'block';
+        setTimeout(() => document.getElementById('saved-msg').style.display = 'none', 3000);
+    }
+</script>
+
+</body>
+</html>

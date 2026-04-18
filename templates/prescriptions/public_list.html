@@ -5,7 +5,7 @@
   {% for p in prescriptions %}
     <li>
       <strong>{{ p.medication_name }}</strong><br>
-      {{ p.dosage }} – {{ p.frequency }}<br>
+      {{ p.dosage }} – {{ p.doses_per_day }}x/day<br>
       {{ p.scheduled_time }}
     </li>
   {% endfor %}

@@ -1,0 +1,147 @@
+========================================================
+  EasyMedRX — Browser Console Test Commands
+  Open DevTools with F12, go to the Console tab,
+  paste any command below and press Enter.
+  You must be logged in as a staff/admin user first.
+
+  IMPORTANT: Paste STEP 0 first every time you open
+  DevTools or refresh the page. The testEndpoint()
+  helper does not persist between sessions.
+========================================================
+
+
+────────────────────────────────────────────────────────
+  STEP 0 — PASTE THIS FIRST (required every session)
+  Paste this helper once per session. It wraps every
+  fetch call and prints the HTTP status + raw body
+  so you can see exactly what the server returned.
+────────────────────────────────────────────────────────
+
+function testEndpoint(url) {
+  fetch(url, { credentials: "same-origin" })
+    .then(r => {
+      console.log("HTTP status:", r.status, r.statusText);
+      return r.text();
+    })
+    .then(t => {
+      try { console.log("Response:", JSON.parse(t)); }
+      catch { console.log("Raw response (not JSON — likely a login redirect or error page):\n", t.slice(0, 500)); }
+    })
+    .catch(e => console.error("Fetch failed:", e));
+}
+
+
+────────────────────────────────────────────────────────
+  1. REQUEST DESKTOP NOTIFICATION PERMISSION
+     Run this first — browser blocks notifications
+     until the user explicitly grants permission.
+────────────────────────────────────────────────────────
+
+Notification.requestPermission().then(p => console.log("Permission:", p));
+
+
+────────────────────────────────────────────────────────
+  2. TEST DESKTOP NOTIFICATION (client-side only)
+     Fires a browser notification directly from JS.
+     No server involved. Confirms the browser
+     permission is granted and popups display.
+────────────────────────────────────────────────────────
+
+new Notification("EasyMedRX Test", { body: "Desktop notification is working!" });
+
+
+────────────────────────────────────────────────────────
+  3. TEST WEBSOCKET NOTIFICATION
+     Asks the server to push a message to your user
+     via the live WebSocket channel. You should see
+     a desktop pop-up triggered by ws.onmessage.
+────────────────────────────────────────────────────────
+
+testEndpoint("/api/test/websocket/");
+
+
+────────────────────────────────────────────────────────
+  4. SIMULATE INCOMING WEBSOCKET MESSAGE (local only)
+     Injects a fake message directly into the open
+     WebSocket object — no server round-trip needed.
+     Useful to confirm the notification pop-up works
+     without needing the server at all.
+────────────────────────────────────────────────────────
+
+ws.dispatchEvent(new MessageEvent("message", {
+  data: JSON.stringify({ message: "MeXXXX — time to take your medication!" })
+}));
+
+
+────────────────────────────────────────────────────────
+  5. TEST MEDICATION REMINDER EMAIL
+     Runs send_due_prescription_notifications now.
+     Only sends for prescriptions whose scheduled
+     hour:minute matches the current time.
+     To force it regardless of time, use command 9.
+────────────────────────────────────────────────────────
+
+testEndpoint("/api/test/email-reminder/");
+
+
+────────────────────────────────────────────────────────
+  6. TEST DAILY REPORT EMAIL
+     Sends the end-of-day staff summary right now.
+     Goes to all staff users with an email address.
+────────────────────────────────────────────────────────
+
+testEndpoint("/api/test/daily-report/");
+
+
+────────────────────────────────────────────────────────
+  7. TEST WEEKLY REPORT EMAIL
+     Sends the weekly staff summary right now,
+     covering the past 7 days of activity.
+────────────────────────────────────────────────────────
+
+testEndpoint("/api/test/weekly-report/");
+
+
+────────────────────────────────────────────────────────
+  8. CHECK WEBSOCKET CONNECTION STATE
+     Should print OPEN. CLOSED means the calendar
+     page needs a refresh or Daphne is down.
+────────────────────────────────────────────────────────
+
+console.log("WebSocket state:", ["CONNECTING","OPEN","CLOSING","CLOSED"][ws.readyState]);
+
+
+────────────────────────────────────────────────────────
+  9. FORCE REMINDER EMAIL (Django shell — not console)
+     Use this in the terminal when the reminder task
+     skips because no prescription matches the time.
+     Open a terminal in the project folder and run:
+────────────────────────────────────────────────────────
+
+venv\Scripts\python manage.py shell -c "from prescriptions.tasks import send_due_prescription_notifications; send_due_prescription_notifications.apply()"
+
+
+────────────────────────────────────────────────────────
+  TROUBLESHOOTING
+────────────────────────────────────────────────────────
+
+If testEndpoint() prints "not JSON — likely a login redirect":
+  → You are not logged in as a staff user.
+     Go to /admin/ in the browser, log in, then retry.
+
+If testEndpoint() prints HTTP status 403:
+  → Logged in but account is not staff.
+     Go to /admin/auth/user/, edit your user,
+     tick "Staff status", save, then retry.
+
+If testEndpoint() prints HTTP status 500:
+  → Server-side error. Check the terminal running
+     Daphne for the Python traceback.
+
+If command 4 shows no pop-up but no error:
+  → Notification permission is not granted.
+     Run command 1 first and click Allow.
+
+If command 3 shows HTTP 200 but no pop-up:
+  → WebSocket is not connected (check command 8)
+     or notification permission is denied (command 1).

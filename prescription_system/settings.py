@@ -1,5 +1,8 @@
 from pathlib import Path
 import os
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).resolve().parent.parent / '.env')
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -41,12 +44,15 @@ WINDOWS_HOST_IP = os.environ.get('DJANGO_WINDOWS_IP', '')
 
 _extra_hosts = [h for h in [WINDOWS_HOST_IP] if h]
 
-ALLOWED_HOSTS = ['127.0.0.1', 'localhost', LOCAL_IP, 'easymedrx.local'] + _extra_hosts
+ALLOWED_HOSTS = ['*']  # dev only — MCU Host header varies by network
 CSRF_TRUSTED_ORIGINS = [
     'http://127.0.0.1:8000',
     f'http://{LOCAL_IP}:8000',
     'http://easymedrx.local:8000',
-] + [f'http://{h}:8000' for h in _extra_hosts]
+    'https://127.0.0.1:8443',
+    f'https://{LOCAL_IP}:8443',
+    'https://easymedrx.local:8443',
+] + [f'http://{h}:8000' for h in _extra_hosts] + [f'https://{h}:8443' for h in _extra_hosts]
 
 # Application definition
 
@@ -132,13 +138,17 @@ DATABASES = {
     }
 }
 
-# Email — delivered via the server's local mail agent (no internet required)
-EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-EMAIL_HOST = 'localhost'
-EMAIL_PORT = 25
-EMAIL_USE_TLS = False
-EMAIL_USE_SSL = False
-DEFAULT_FROM_EMAIL = 'EasyMedRX <noreply@localhost>'
+# Public base URL used in outgoing emails
+APP_BASE_URL = os.environ.get('APP_BASE_URL', f'http://{LOCAL_IP}:8000')
+
+# Email — configured via .env
+EMAIL_BACKEND    = 'django.core.mail.backends.smtp.EmailBackend'
+EMAIL_HOST       = os.environ.get('EMAIL_HOST', 'smtp.gmail.com')
+EMAIL_PORT       = int(os.environ.get('EMAIL_PORT', 587))
+EMAIL_USE_TLS    = os.environ.get('EMAIL_USE_TLS', 'True') == 'True'
+EMAIL_HOST_USER  = os.environ.get('EMAIL_HOST_USER', '')
+EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD', '')
+DEFAULT_FROM_EMAIL  = os.environ.get('DEFAULT_FROM_EMAIL', EMAIL_HOST_USER)
 
 # Password validation
 # https://docs.djangoproject.com/en/6.0/ref/settings/#auth-password-validators

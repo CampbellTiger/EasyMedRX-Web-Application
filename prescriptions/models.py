@@ -1,72 +1,112 @@
 from django.db import models
 from django.contrib.auth.models import User
 from django.utils import timezone
+from django.core.validators import MaxValueValidator
+
+MAX_STOCK = 30
 
 
 class UserProfile(models.Model):
     """Stores extra contact info not on Django's built-in User model."""
-    user  = models.OneToOneField(User, on_delete=models.CASCADE, related_name='profile')
-    phone = models.CharField(max_length=30, blank=True, default='')
+    user     = models.OneToOneField(User, on_delete=models.CASCADE, related_name='profile')
+    phone    = models.CharField(max_length=30, blank=True, default='')
+    rfid_uid = models.CharField(
+        max_length=64,
+        blank=True,
+        default='',
+        help_text='RFID card UID for this patient (e.g. 87447d33)',
+    )
 
     def __str__(self):
         return f"Profile({self.user.username})"
 
 
+class Device(models.Model):
+    device_id = models.CharField(max_length=64, unique=True)
+    patients  = models.ManyToManyField(User, related_name='devices', blank=True)
+
+    def __str__(self):
+        return self.device_id
+
+
 class Prescription(models.Model):
-    user = models.ForeignKey(
-        User,
-        on_delete=models.CASCADE,
-        related_name='prescriptions'
+    CONTAINER_CHOICES = [
+        (1, 'Container 1'), (2, 'Container 2'),
+        (3, 'Container 3'), (4, 'Container 4'),
+    ]
+
+    user   = models.ForeignKey(User, on_delete=models.CASCADE, related_name='prescriptions')
+    device = models.ForeignKey(
+        Device,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='prescriptions',
     )
-    medication_name = models.CharField(max_length=200)
-    dosage = models.CharField(max_length=100)
-    # Number of units (pills) per dose — used in the MCU flat format 
-    dose_count  = models.PositiveIntegerField(default=1)
-    # Current stock level on the device — kept in sync via MCU push 
-    stock_count = models.PositiveIntegerField(default=0)
-    frequency = models.CharField(max_length=100)
-    instructions = models.TextField(blank=True)
+    medication_name    = models.CharField(max_length=200)
+    dosage             = models.CharField(max_length=100)
+    dose_count         = models.PositiveIntegerField(default=1)
+    stock_count        = models.PositiveIntegerField(default=0, validators=[MaxValueValidator(MAX_STOCK)])
+    add_stock          = models.PositiveIntegerField(default=0, validators=[MaxValueValidator(MAX_STOCK)], help_text='Pills to add on top of the next MCU stock report (capped so total does not exceed 30)')
+    doses_per_day      = models.PositiveSmallIntegerField(default=1, help_text='Number of doses per day')
+    instructions       = models.TextField(blank=True)
     prescribing_doctor = models.CharField(max_length=200)
-    start_date = models.DateField()
-    end_date = models.DateField(blank=True, null=True)
-    scheduled_time = models.DateTimeField(default=timezone.now, db_index=True)
-    ready = models.BooleanField(default=False, db_index=True)
-    last_notified = models.DateTimeField(blank=True, null=True)
+    start_date         = models.DateField()
+    end_date           = models.DateField(blank=True, null=True)
+    scheduled_time     = models.DateTimeField(default=timezone.now, db_index=True)
+    ready              = models.BooleanField(default=False, db_index=True)
+    last_notified      = models.DateTimeField(blank=True, null=True)
+    container          = models.PositiveSmallIntegerField(
+        choices=CONTAINER_CHOICES,
+        blank=True,
+        null=True,
+    )
+
     def __str__(self):
         return f"{self.medication_name} ({self.user.username})"
 
-class Device(models.Model):
-    device_id = models.CharField(max_length=64, unique=True)
-    patient = models.ForeignKey(User, on_delete=models.CASCADE)
+
+class DoseTime(models.Model):
+    """One scheduled dose time for a prescription. A prescription with doses_per_day=3 has 3 rows."""
+    prescription = models.ForeignKey(Prescription, on_delete=models.CASCADE, related_name='dose_times')
+    time_of_day  = models.TimeField()
+    label        = models.CharField(max_length=50, blank=True, default='', help_text='e.g. Morning, Afternoon, Evening')
+
+    class Meta:
+        ordering = ['time_of_day']
 
     def __str__(self):
-        return f"{self.device_id} ({self.patient.username})"
+        return f"{self.prescription.medication_name} at {self.time_of_day}"
 
-#MODEL FOR LOGGING DATA FOR MISSES AND GRABBED PRECRIPTIONS
+
 class PrescriptionLogging(models.Model):
     EVENT_TYPES = [
-        ("REMINDER_SENT", "Reminder Sent"),
-        ("TAKEN", 'Taken'),
-        ("MISSED", "Missed")
+        ("REMINDER_SENT",  "Reminder Sent"),
+        ("TAKEN",          "Taken"),
+        ("MISSED",         "Missed"),
+        ("REFILL",         "Refill"),
+        ("DISPENSE_SENT",  "Dispense Sent to MCU"),
     ]
 
     prescription = models.ForeignKey(
-        "Prescription", 
-        on_delete=models.CASCADE, 
-        related_name="logs"  # Reverse: prescription.logs.all()
+        "Prescription",
+        on_delete=models.CASCADE,
+        related_name="logs",
     )
     user = models.ForeignKey(
-        User, 
-        on_delete=models.CASCADE, 
-        related_name="prescription_logs"  # Reverse: user.prescription_logs.all()
+        User,
+        on_delete=models.CASCADE,
+        related_name="prescription_logs",
     )
 
-    event_type = models.CharField(max_length=20, choices=EVENT_TYPES)
-    scheduled_time = models.DateTimeField()  # When it was supposed to be taken
-    event_time = models.DateTimeField(auto_now_add=True)  # When the log was recorded
+    event_type     = models.CharField(max_length=20, choices=EVENT_TYPES)
+    scheduled_time = models.DateTimeField()
+    event_time     = models.DateTimeField(auto_now_add=True)
+    quantity       = models.PositiveIntegerField(null=True, blank=True, help_text='Pills involved in this event')
 
     def __str__(self):
         return f"{self.event_type} - {self.prescription.medication_name} ({self.user.username})"
+
 
 class ErrorLog(models.Model):
     device_id  = models.CharField(max_length=255)
@@ -78,7 +118,7 @@ class ErrorLog(models.Model):
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
-        related_name='error_logs'
+        related_name='error_logs',
     )
 
     def __str__(self):
@@ -92,3 +132,46 @@ class FailedLoginLog(models.Model):
 
     def __str__(self):
         return f"[{self.timestamp}] Failed login — {self.username} from {self.ip}"
+
+
+class NotificationPreference(models.Model):
+    user                         = models.OneToOneField(User, on_delete=models.CASCADE, related_name='notification_preferences')
+    email_enabled                = models.BooleanField(default=True)
+    desktop_notification_enabled = models.BooleanField(default=True)
+    prescription_reminder_enabled = models.BooleanField(default=True)
+    low_stock_alert_enabled      = models.BooleanField(default=True)
+    missed_dose_alert_enabled    = models.BooleanField(default=True)
+    device_error_alert_enabled   = models.BooleanField(default=True)
+    push_enabled                 = models.BooleanField(default=True)
+
+    def __str__(self):
+        return f"NotificationPreference({self.user.username})"
+
+
+class PushSubscription(models.Model):
+    user       = models.ForeignKey(User, on_delete=models.CASCADE, related_name='push_subscriptions')
+    endpoint   = models.TextField(unique=True)
+    p256dh     = models.TextField()
+    auth       = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"PushSubscription({self.user.username})"
+
+
+class RFIDCard(models.Model):
+    uid         = models.CharField(max_length=64, unique=True, help_text='Physical RFID card UID (e.g. 87447d33)')
+    assigned_to = models.OneToOneField(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='rfid_card',
+        help_text='User this card is assigned to (blank = available)',
+    )
+
+    class Meta:
+        ordering = ['id']
+
+    def __str__(self):
+        return f"RFIDCard({self.uid})"

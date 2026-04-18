@@ -4,6 +4,13 @@ __pycache__/
 *.pyo
 *.pyd
 
+# Secrets / credentials — never commit these
+.env
+*.pem
+
+# Logs
+logs/
+
 # Virtual environment
 venv/
 env/

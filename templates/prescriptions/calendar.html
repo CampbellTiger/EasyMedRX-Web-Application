@@ -30,7 +30,10 @@
         {% if user.is_authenticated %}
             {% if user.is_staff %}
                 <a href="/admin/" style="margin-right:10px;">Management Area</a>
+                <a href="{% url 'rename_medication' %}" style="margin-right:10px;">Edit Medication</a>
+                <a href="{% url 'mcu_log' %}" style="margin-right:10px;">MCU Log</a>
             {% endif %}
+            <a href="{% url 'notification_preferences' %}" style="margin-right:10px;">Notifications</a>
             <span>Welcome, {{ user.username }}!</span>
             {% else %}
             <a href="{% url 'admin:login' %}" style="margin-left:10px;">Login</a>
@@ -46,17 +49,27 @@
         var calendarEl = document.getElementById("calendar");
 
         var calendar = new FullCalendar.Calendar(calendarEl, {
-            initialView: "dayGridMonth",
+            initialView: "timeGridWeek",
             height: "auto",
+            headerToolbar: {
+                left:   "prev,next today",
+                center: "title",
+                right:  "dayGridMonth,timeGridWeek,timeGridDay"
+            },
+            slotMinTime: "06:00:00",
+            slotMaxTime: "23:00:00",
+            allDaySlot: false,
+            nowIndicator: true,
             events: "{% url 'prescription_events' %}",
             eventClick: function(info) {
+                var p = info.event.extendedProps;
                 alert(
-                    info.event.title + "\n" + 
-                    info.event.extendedProps.user + '\n' +
-                    info.event.extendedProps.instructions + '\n' +
-                    info.event.start.toLocaleDateString() + ' to ' +
-                    info.event.end.toLocaleDateString() + '\n' + 
-                    info.event.extendedProps.time
+                    info.event.title + "\n" +
+                    "Patient: "      + p.user         + "\n" +
+                    "Time: "         + p.time         + "\n" +
+                    "Dose: "         + p.dose         + "\n" +
+                    "Stock: "        + p.stock        + "\n" +
+                    "Instructions: " + p.instructions
                 );
             }
         });
@@ -83,7 +96,8 @@
     let ws;
 
     function connectWebSocket() {
-        ws = new WebSocket("ws://" + window.location.host + "/ws/notifications/");
+        const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+        ws = new WebSocket(wsProtocol + "//" + window.location.host + "/ws/notifications/");
 
         ws.onopen = function() {
             console.log("WebSocket connected!");
