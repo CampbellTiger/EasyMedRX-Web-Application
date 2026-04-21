@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Login – EasyMedRX</title>
+    <style>
+        body { font-family: Arial, sans-serif; background: #f8f9fa; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
+        .card { background: #fff; border: 1px solid #dee2e6; border-radius: 6px; padding: 36px 40px; width: 100%; max-width: 380px; }
+        .logo { text-align: center; margin-bottom: 24px; }
+        .logo h1 { margin: 0; font-size: 1.6em; color: #1E90FF; }
+        .logo p  { margin: 4px 0 0; font-size: .85em; color: #888; }
+        label { display: block; font-weight: bold; font-size: .88em; margin-bottom: 4px; margin-top: 14px; }
+        input[type=text], input[type=password] {
+            width: 100%; padding: 9px 11px; border: 1px solid #ced4da;
+            border-radius: 4px; font-size: 1em; box-sizing: border-box;
+        }
+        .error { background: #f8d7da; border: 1px solid #f5c6cb; color: #721c24; padding: 10px 14px; border-radius: 4px; font-size: .88em; margin-top: 14px; }
+        button {
+            margin-top: 20px; width: 100%; padding: 10px;
+            background: #1E90FF; color: #fff; border: none;
+            border-radius: 4px; font-size: 1em; cursor: pointer;
+        }
+        button:hover { background: #1a7de0; }
+        .divider { display: flex; align-items: center; gap: 10px; margin: 20px 0 0; color: #ccc; font-size: .82em; }
+        .divider::before, .divider::after { content: ''; flex: 1; border-top: 1px solid #dee2e6; }
+        .admin-link {
+            display: block; text-align: center; margin-top: 12px;
+            padding: 8px; border: 1px solid #dee2e6; border-radius: 4px;
+            color: #555; font-size: .88em; text-decoration: none;
+        }
+        .admin-link:hover { background: #f8f9fa; color: #333; }
+    </style>
+</head>
+<body>
+<div class="card">
+    <div class="logo">
+        <h1>EasyMedRX</h1>
+        <p>Patient login</p>
+    </div>
+
+    <form method="post">
+        {% csrf_token %}
+        {% if form.errors %}
+        <div class="error">Incorrect username or password. Please try again.</div>
+        {% endif %}
+        <label for="id_username">Username</label>
+        <input type="text"     id="id_username" name="username" autofocus>
+        <label for="id_password">Password</label>
+        <input type="password" id="id_password" name="password">
+        <input type="hidden" name="next" value="{{ next }}">
+        <button type="submit">Log in</button>
+        <div style="text-align:right;margin-top:8px;">
+            <a href="{% url 'admin_password_reset' %}" style="font-size:.85em;color:#888;">Forgot password?</a>
+        </div>
+    </form>
+
+    <div class="divider">staff access</div>
+    <a class="admin-link" href="/admin/login/">&#9679; Management / Admin login</a>
+</div>
+</body>
+</html>

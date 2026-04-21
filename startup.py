@@ -223,7 +223,7 @@ ssl_log = open("logs/daphne_ssl.log", "w")
 subprocess.Popen([CELERY, "-A", "prescription_system", "beat",   "--loglevel=info"],              stdout=beat_log,   stderr=beat_log,   start_new_session=True)
 subprocess.Popen([CELERY, "-A", "prescription_system", "worker", "-n", "worker1@%h", "--loglevel=info"], stdout=worker_log, stderr=worker_log, start_new_session=True)
 subprocess.Popen([DAPHNE, "-b", "0.0.0.0", "-p", "8000", "prescription_system.asgi:application"],                                                                   stdout=daphne_log, stderr=daphne_log, start_new_session=True)
-subprocess.Popen([DAPHNE, "-e", f"ssl:8443:privateKey={BASE_DIR}/key.pem:certKey={BASE_DIR}/cert.pem", "prescription_system.asgi:application"], stdout=ssl_log, stderr=ssl_log, start_new_session=True)
+subprocess.Popen([DAPHNE, "-e", f"ssl:8443:privateKey={BASE_DIR}/key.pem:certKey={BASE_DIR}/cert.pem:sslmethod=TLSv1_2_METHOD", "prescription_system.asgi:application"], stdout=ssl_log, stderr=ssl_log, start_new_session=True)
 
 print("All services started!")
 print("Logs: logs/celery_beat.log | logs/celery_worker.log | logs/daphne.log | logs/daphne_ssl.log")

@@ -1,7 +1,7 @@
 from django.db import models
 from django.contrib.auth.models import User
 from django.utils import timezone
-from django.core.validators import MaxValueValidator
+from django.core.validators import MaxValueValidator, MinValueValidator
 
 MAX_STOCK = 30
 
@@ -49,6 +49,8 @@ class Prescription(models.Model):
     stock_count        = models.PositiveIntegerField(default=0, validators=[MaxValueValidator(MAX_STOCK)])
     add_stock          = models.PositiveIntegerField(default=0, validators=[MaxValueValidator(MAX_STOCK)], help_text='Pills to add on top of the next MCU stock report (capped so total does not exceed 30)')
     doses_per_day      = models.PositiveSmallIntegerField(default=1, help_text='Number of doses per day')
+    window_before_minutes = models.PositiveSmallIntegerField(default=15, validators=[MinValueValidator(5)], help_text='Minutes before dose time the window opens (minimum 5)')
+    window_minutes        = models.PositiveSmallIntegerField(default=30, validators=[MinValueValidator(5)], help_text='Minutes after dose time before window expires (minimum 5)')
     instructions       = models.TextField(blank=True)
     prescribing_doctor = models.CharField(max_length=200)
     start_date         = models.DateField()
@@ -82,6 +84,7 @@ class DoseTime(models.Model):
 class PrescriptionLogging(models.Model):
     EVENT_TYPES = [
         ("REMINDER_SENT",  "Reminder Sent"),
+        ("WARNING",        "Window Warning"),
         ("TAKEN",          "Taken"),
         ("MISSED",         "Missed"),
         ("REFILL",         "Refill"),

@@ -202,15 +202,32 @@ print('\n[4/4] SSL certificate (cert.pem / key.pem)')
 if os.path.exists(CERT_PATH) and os.path.exists(KEY_PATH):
     skip('cert.pem and key.pem')
 else:
+    import socket as _sock
+    try:
+        s = _sock.socket(_sock.AF_INET, _sock.SOCK_DGRAM)
+        s.connect(('8.8.8.8', 80))
+        wsl_ip = s.getsockname()[0]
+        s.close()
+    except Exception:
+        wsl_ip = '127.0.0.1'
+
+    san = f'IP:{wsl_ip},IP:127.0.0.1,DNS:easymedrx.local,DNS:localhost'
     result = subprocess.run(
         ['openssl', 'req', '-x509', '-newkey', 'rsa:2048',
          '-keyout', KEY_PATH, '-out', CERT_PATH,
          '-days', '365', '-nodes',
-         '-subj', '/CN=easymedrx.local'],
+         '-subj', '/CN=easymedrx.local',
+         '-addext', f'subjectAltName={san}'],
         capture_output=True, text=True,
     )
     if result.returncode == 0:
-        ok('cert.pem and key.pem generated (valid 365 days)')
+        # Export DER format and ca.pem copy for MCU flashing
+        base = os.path.dirname(CERT_PATH)
+        subprocess.run(['openssl', 'x509', '-in', CERT_PATH, '-outform', 'DER',
+                        '-out', os.path.join(base, 'cert.der')], capture_output=True)
+        import shutil
+        shutil.copy(CERT_PATH, os.path.join(base, 'ca.pem'))
+        ok('cert.pem / key.pem generated (valid 365 days); ca.pem + cert.der ready for MCU')
     else:
         warn('openssl failed — is it installed?')
         print(f'    {result.stderr.strip()}')

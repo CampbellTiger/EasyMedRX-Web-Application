@@ -342,12 +342,36 @@ def device_push(request):
                     p.stock_count = min(int(stock) + p.add_stock, MAX_STOCK)
                     p.add_stock   = 0
                     p.save(update_fields=['stock_count', 'add_stock'])
+
+                    if p.stock_count < 5:
+                        from .consumers import notify_user
+                        prefs, _ = NotificationPreference.objects.get_or_create(user=p.user)
+                        if prefs.low_stock_alert_enabled:
+                            notify_user(p.user.id, f"Low stock: {p.medication_name} has {p.stock_count} pill(s) remaining.")
                 # If names don't match the MCU is stale; return DB's name so it updates.
 
             resp[f'medicine{i}'] = p.medication_name if p else medicine
             resp[f'stock{i}']    = p.stock_count if p else 0
 
         return _mcu_resp(resp, status=200)
+
+    # ── onlineLogin ───────────────────────────────────────────────────────────
+    # MCU sends {"type":"onlineLogin", "username":"...", "password":"..."}
+    # Response: {"success": true, "uid": "<rfid_uid>"} or {"success": false}
+    elif event_lower == 'onlinelogin':
+        username = data.get('username', '').strip()
+        password = data.get('password', '')
+
+        user = authenticate(request, username=username, password=password)
+        if user is None or not user.is_active:
+            return _mcu_resp({'uid': ''}, status=200)
+
+        try:
+            rfid_uid = user.profile.rfid_uid or ''
+        except Exception:
+            rfid_uid = ''
+
+        return _mcu_resp({'uid': rfid_uid}, status=200)
 
     # ── Error ─────────────────────────────────────────────────────────────────
     # MCU sends {"type":"Error", "uid":..., "message":..., "time":...} for
@@ -502,12 +526,10 @@ def prescription_events(request):
             label='',
         )
 
-    dose_times = (
-        DoseTime.objects
-        .select_related('prescription__user')
-        .all()
-        .order_by('prescription__user_id', 'time_of_day')
-    )
+    qs = DoseTime.objects.select_related('prescription__user')
+    if not request.user.is_staff:
+        qs = qs.filter(prescription__user=request.user)
+    dose_times = qs.order_by('prescription__user_id', 'time_of_day')
 
     events      = []
     user_colors = {}
@@ -746,6 +768,12 @@ def rename_medication(request):
                         'by':        request.user.username,
                     })
                     success = f'Container {container_num} — "{saved.medication_name}" {action}.'
+
+                    # Notify the patient that their prescription was updated
+                    from .consumers import notify_user as _notify
+                    prefs, _ = NotificationPreference.objects.get_or_create(user=saved.user)
+                    if prefs.prescription_reminder_enabled:
+                        _notify(saved.user.id, f"Your prescription for {saved.medication_name} has been updated.")
                     form = CompartmentEditForm()  # reset to unbound after success
 
     # Build compartments by container number (1-4) — authoritative slot source.

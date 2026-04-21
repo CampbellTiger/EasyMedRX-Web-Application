@@ -116,6 +116,134 @@ def send_due_prescription_notifications():
                 fail_silently=True,
             )
 
+    # ── Early window open notification ────────────────────────────────────────
+    # Fire when now == dose_time - window_before_minutes for any active dose.
+    # Skipped when window_before_minutes == 0.
+    early_dose_times = (
+        DoseTime.objects
+        .select_related('prescription__user', 'prescription')
+        .filter(
+            prescription__start_date__lte=today,
+        )
+        .filter(
+            Q(prescription__end_date__isnull=True) | Q(prescription__end_date__gte=today)
+        )
+        .exclude(prescription__window_before_minutes=0)
+    )
+
+    for dt in early_dose_times:
+        p = dt.prescription
+        dose_time_aware = timezone.make_aware(
+            timezone.datetime.combine(today, dt.time_of_day)
+        )
+        open_at = dose_time_aware - timezone.timedelta(minutes=p.window_before_minutes)
+        if open_at.hour != now.hour or open_at.minute != now.minute:
+            continue
+
+        already_sent = PrescriptionLogging.objects.filter(
+            prescription=p,
+            event_type='REMINDER_SENT',
+            scheduled_time__date=today,
+            scheduled_time__hour=dt.time_of_day.hour,
+            scheduled_time__minute=dt.time_of_day.minute,
+        ).exists()
+        if already_sent:
+            continue
+
+        prefs, _ = NotificationPreference.objects.get_or_create(user=p.user)
+        if prefs.prescription_reminder_enabled and prefs.desktop_notification_enabled:
+            label_suffix = f' ({dt.label})' if dt.label else ''
+            try:
+                notify_user(
+                    p.user.id,
+                    f"Medication window open: {_mask(p.medication_name)}{label_suffix} "
+                    f"can be taken now (scheduled {dt.time_of_day.strftime('%I:%M %p')})."
+                )
+            except Exception:
+                pass
+
+    # ── Window warning (5 min before expiry) and missed notifications ─────────
+    # For every active DoseTime that had a REMINDER_SENT today and is not yet
+    # TAKEN, check whether now == dose_time + window - 5 (warn) or
+    # now == dose_time + window (missed).
+    active_dose_times = (
+        DoseTime.objects
+        .select_related('prescription__user', 'prescription')
+        .filter(
+            prescription__start_date__lte=today,
+            prescription__logs__event_type='REMINDER_SENT',
+            prescription__logs__scheduled_time__date=today,
+        )
+        .filter(
+            Q(prescription__end_date__isnull=True) | Q(prescription__end_date__gte=today)
+        )
+        .distinct()
+    )
+
+    for dt in active_dose_times:
+        p = dt.prescription
+        dose_time_aware = timezone.make_aware(
+            timezone.datetime.combine(today, dt.time_of_day)
+        )
+        warn_at   = dose_time_aware + timezone.timedelta(minutes=p.window_minutes - 5)
+        missed_at = dose_time_aware + timezone.timedelta(minutes=p.window_minutes)
+
+        # Skip if the dose was already taken
+        already_taken = PrescriptionLogging.objects.filter(
+            prescription=p,
+            event_type='TAKEN',
+            scheduled_time__date=today,
+            scheduled_time__hour=dt.time_of_day.hour,
+            scheduled_time__minute=dt.time_of_day.minute,
+        ).exists()
+        if already_taken:
+            continue
+
+        prefs, _ = NotificationPreference.objects.get_or_create(user=p.user)
+        masked_med = _mask(p.medication_name)
+
+        # 5-minute window warning
+        if warn_at.hour == now.hour and warn_at.minute == now.minute:
+            already_warned = PrescriptionLogging.objects.filter(
+                prescription=p,
+                event_type='WARNING',
+                scheduled_time__date=today,
+                scheduled_time__hour=dt.time_of_day.hour,
+                scheduled_time__minute=dt.time_of_day.minute,
+            ).exists()
+            if not already_warned and prefs.missed_dose_alert_enabled:
+                try:
+                    notify_user(p.user.id, f"5 minutes left to take {masked_med}!")
+                except Exception:
+                    pass
+                PrescriptionLogging.objects.create(
+                    user=p.user,
+                    prescription=p,
+                    event_type='WARNING',
+                    scheduled_time=dose_time_aware,
+                )
+
+        # Missed notification
+        if missed_at.hour == now.hour and missed_at.minute == now.minute:
+            already_missed = PrescriptionLogging.objects.filter(
+                prescription=p,
+                event_type='MISSED',
+                scheduled_time__date=today,
+                scheduled_time__hour=dt.time_of_day.hour,
+                scheduled_time__minute=dt.time_of_day.minute,
+            ).exists()
+            if not already_missed and prefs.missed_dose_alert_enabled:
+                try:
+                    notify_user(p.user.id, f"Missed dose: {masked_med} window has closed.")
+                except Exception:
+                    pass
+                PrescriptionLogging.objects.create(
+                    user=p.user,
+                    prescription=p,
+                    event_type='MISSED',
+                    scheduled_time=dose_time_aware,
+                )
+
 
 @shared_task
 def send_daily_report():
