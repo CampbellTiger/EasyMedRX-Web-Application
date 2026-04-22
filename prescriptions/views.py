@@ -548,10 +548,11 @@ def prescription_events(request):
         )
         label_suffix = f' ({dt.label})' if dt.label else ''
 
+        dur_h, dur_m = divmod(p.window_minutes, 60)
         events.append({
             'title':      p.medication_name + label_suffix,
             'startTime':  dt.time_of_day.strftime('%H:%M'),
-            'duration':   '00:30',
+            'duration':   f'{dur_h:02d}:{dur_m:02d}',
             'startRecur': p.start_date.isoformat(),
             'endRecur':   end_recur,
             'allDay':     False,

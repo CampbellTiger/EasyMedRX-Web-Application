@@ -163,47 +163,50 @@ def send_due_prescription_notifications():
                 pass
 
     # ── Window warning (5 min before expiry) and missed notifications ─────────
-    # For every active DoseTime that had a REMINDER_SENT today and is not yet
-    # TAKEN, check whether now == dose_time + window - 5 (warn) or
-    # now == dose_time + window (missed).
-    active_dose_times = (
+    # Query all active DoseTimes directly — no dependency on REMINDER_SENT so
+    # these fire even if the initial reminder had a delivery hiccup.
+    # A dose is considered dispensed when the MCU logs DISPENSE_SENT within
+    # the full dose window (window_before_minutes before → window_minutes after).
+    all_active_dose_times = (
         DoseTime.objects
         .select_related('prescription__user', 'prescription')
         .filter(
             prescription__start_date__lte=today,
-            prescription__logs__event_type='REMINDER_SENT',
-            prescription__logs__scheduled_time__date=today,
         )
         .filter(
             Q(prescription__end_date__isnull=True) | Q(prescription__end_date__gte=today)
         )
-        .distinct()
     )
 
-    for dt in active_dose_times:
+    for dt in all_active_dose_times:
         p = dt.prescription
         dose_time_aware = timezone.make_aware(
             timezone.datetime.combine(today, dt.time_of_day)
         )
-        warn_at   = dose_time_aware + timezone.timedelta(minutes=p.window_minutes - 5)
-        missed_at = dose_time_aware + timezone.timedelta(minutes=p.window_minutes)
+        window_open  = dose_time_aware - timezone.timedelta(minutes=p.window_before_minutes)
+        missed_at    = dose_time_aware + timezone.timedelta(minutes=p.window_minutes)
+        warn_minutes = max(p.window_minutes - 5, 0)
+        warn_at      = dose_time_aware + timezone.timedelta(minutes=warn_minutes)
 
-        # Skip if the dose was already taken
-        already_taken = PrescriptionLogging.objects.filter(
+        # Skip if the MCU already dispensed this dose within the full window
+        already_dispensed = PrescriptionLogging.objects.filter(
             prescription=p,
-            event_type='TAKEN',
-            scheduled_time__date=today,
-            scheduled_time__hour=dt.time_of_day.hour,
-            scheduled_time__minute=dt.time_of_day.minute,
+            event_type='DISPENSE_SENT',
+            scheduled_time__gte=window_open,
+            scheduled_time__lt=missed_at,
         ).exists()
-        if already_taken:
+        if already_dispensed:
             continue
 
         prefs, _ = NotificationPreference.objects.get_or_create(user=p.user)
-        masked_med = _mask(p.medication_name)
+        if not prefs.missed_dose_alert_enabled:
+            continue
 
-        # 5-minute window warning
-        if warn_at.hour == now.hour and warn_at.minute == now.minute:
+        masked_med   = _mask(p.medication_name)
+        label_suffix = f' ({dt.label})' if dt.label else ''
+
+        # 5-minute window warning — only meaningful when window > 5 min
+        if p.window_minutes > 5 and warn_at.hour == now.hour and warn_at.minute == now.minute:
             already_warned = PrescriptionLogging.objects.filter(
                 prescription=p,
                 event_type='WARNING',
@@ -211,9 +214,12 @@ def send_due_prescription_notifications():
                 scheduled_time__hour=dt.time_of_day.hour,
                 scheduled_time__minute=dt.time_of_day.minute,
             ).exists()
-            if not already_warned and prefs.missed_dose_alert_enabled:
+            if not already_warned:
                 try:
-                    notify_user(p.user.id, f"5 minutes left to take {masked_med}!")
+                    notify_user(
+                        p.user.id,
+                        f"5 minutes left to take {masked_med}{label_suffix}!",
+                    )
                 except Exception:
                     pass
                 PrescriptionLogging.objects.create(
@@ -223,7 +229,7 @@ def send_due_prescription_notifications():
                     scheduled_time=dose_time_aware,
                 )
 
-        # Missed notification
+        # Missed notification — fires at dose_time + window_minutes if not dispensed
         if missed_at.hour == now.hour and missed_at.minute == now.minute:
             already_missed = PrescriptionLogging.objects.filter(
                 prescription=p,
@@ -232,17 +238,49 @@ def send_due_prescription_notifications():
                 scheduled_time__hour=dt.time_of_day.hour,
                 scheduled_time__minute=dt.time_of_day.minute,
             ).exists()
-            if not already_missed and prefs.missed_dose_alert_enabled:
+            if not already_missed:
                 try:
-                    notify_user(p.user.id, f"Missed dose: {masked_med} window has closed.")
+                    notify_user(
+                        p.user.id,
+                        f"Missed dose: {masked_med}{label_suffix} — window has closed.",
+                    )
                 except Exception:
                     pass
+
                 PrescriptionLogging.objects.create(
                     user=p.user,
                     prescription=p,
                     event_type='MISSED',
                     scheduled_time=dose_time_aware,
                 )
+
+                # Email alert for missed dose
+                if prefs.email_enabled and p.user.email:
+                    display_name  = _mask(p.user.first_name or p.user.username)
+                    app_url       = getattr(settings, 'APP_BASE_URL', 'http://localhost:8000')
+                    end_date_line = f"End date:   {p.end_date}\n" if p.end_date else ""
+                    body = (
+                        f"Hello {display_name},\n\n"
+                        f"A scheduled dose was NOT dispensed and the time window has closed.\n\n"
+                        f"Medication:  {masked_med}{label_suffix}\n"
+                        f"Dosage:      {_mask(p.dosage)}\n"
+                        f"Scheduled:   {dt.time_of_day.strftime('%I:%M %p')}\n"
+                        f"Window:      {p.window_minutes} minutes\n"
+                        f"Start date:  {p.start_date}\n"
+                        f"{end_date_line}"
+                        f"Doctor:      {_mask(p.prescribing_doctor)}\n"
+                        f"\nPlease contact your caregiver or take the medication as soon as possible "
+                        f"if it is still safe to do so.\n"
+                        f"\n─────────────────────────────\n"
+                        f"Open EasyMedRX: {app_url}\n"
+                    )
+                    send_mail(
+                        subject=f"Missed Dose Alert: {masked_med}",
+                        message=body,
+                        from_email=settings.DEFAULT_FROM_EMAIL,
+                        recipient_list=[p.user.email],
+                        fail_silently=True,
+                    )
 
 
 @shared_task

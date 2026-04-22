@@ -106,25 +106,68 @@ def ensure_vapid_keys():
         print(f"  VAPID: generation failed — {ex}")
 
 
-def ensure_ssl_cert():
-    """Generate a self-signed cert/key if either file is missing."""
-    if os.path.exists("cert.pem") and os.path.exists("key.pem"):
-        print("  SSL: certificate already exists")
+def _cert_has_ip(cert_path, ip):
+    """Return True if the certificate at cert_path contains ip as a SAN IP."""
+    try:
+        result = subprocess.run(
+            ["openssl", "x509", "-in", cert_path, "-noout", "-text"],
+            capture_output=True, text=True,
+        )
+        return f"IP Address:{ip}" in result.stdout
+    except Exception:
+        return False
+
+
+def ensure_ssl_cert(wsl_ip=None, windows_ip=None):
+    """Generate (or regenerate) the self-signed cert so all current IPs are SANs."""
+    base = os.path.dirname(os.path.abspath(__file__))
+    cert = os.path.join(base, "cert.pem")
+    key  = os.path.join(base, "key.pem")
+
+    # Regenerate if cert is missing OR if the Windows LAN IP is not yet in the SANs
+    needs_regen = not (os.path.exists(cert) and os.path.exists(key))
+    if not needs_regen and windows_ip and not _cert_has_ip(cert, windows_ip):
+        print(f"  SSL: Windows IP {windows_ip} not in cert SANs — regenerating")
+        needs_regen = True
+
+    if not needs_regen:
+        print("  SSL: certificate is up to date")
         return
+
     print("  SSL: generating self-signed certificate...")
+    ips = ["IP:127.0.0.1"]
+    if wsl_ip:
+        ips.append(f"IP:{wsl_ip}")
+    if windows_ip:
+        ips.append(f"IP:{windows_ip}")
+    san = ",".join(ips) + ",DNS:easymedrx.local,DNS:localhost"
+
     result = subprocess.run(
         ["openssl", "req", "-x509", "-newkey", "rsa:2048",
-         "-keyout", "key.pem", "-out", "cert.pem",
+         "-keyout", key, "-out", cert,
          "-days", "365", "-nodes",
-         "-subj", "/CN=easymrdrx.local"],
-        capture_output=True, text=True
+         "-subj", "/CN=easymedrx.local",
+         "-addext", f"subjectAltName={san}"],
+        capture_output=True, text=True,
     )
-    if result.returncode == 0:
-        print("  SSL: cert.pem and key.pem generated")
-    else:
+    if result.returncode != 0:
         print("  SSL: FAILED to generate certificate")
         print(f"    {result.stderr.strip()}")
         raise SystemExit(1)
+
+    # Export ca.pem and cert.der for the MCU
+    import shutil
+    mcu_dir = os.path.join(base, "CC3220S_LAUNCHXL_FINAL")
+    shutil.copy(cert, os.path.join(base, "ca.pem"))
+    if os.path.isdir(mcu_dir):
+        shutil.copy(cert, os.path.join(mcu_dir, "ca.pem"))
+        print(f"  SSL: ca.pem copied to CC3220S_LAUNCHXL_FINAL/")
+    subprocess.run(
+        ["openssl", "x509", "-in", cert, "-outform", "DER",
+         "-out", os.path.join(base, "cert.der")],
+        capture_output=True,
+    )
+    print(f"  SSL: cert regenerated — SANs: {san}")
 
 
 def ensure_firewall_rule():
@@ -188,7 +231,7 @@ for f in ["celerybeat-schedule", "celerybeat-schedule.db"]:
 
 print("\nConfiguring network access...")
 ensure_vapid_keys()
-ensure_ssl_cert()
+ensure_ssl_cert(wsl_ip=WSL_IP, windows_ip=WINDOWS_IP)
 setup_port_proxy(WSL_IP)
 ensure_firewall_rule()
 
