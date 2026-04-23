@@ -178,3 +178,18 @@ class RFIDCard(models.Model):
 
     def __str__(self):
         return f"RFIDCard({self.uid})"
+
+
+class MCUSession(models.Model):
+    """One active user per MCU device, set via the MCU Login web page.
+
+    device_id matches the uid/UID field the MCU sends in every request.
+    When a new user logs in for a device, the old session for that device is
+    replaced.  Multiple devices can each have a different active user.
+    """
+    user         = models.ForeignKey(User, on_delete=models.CASCADE, related_name='mcu_sessions')
+    device_id    = models.CharField(max_length=64, unique=True, help_text="MCU's own uid/UID identifier")
+    logged_in_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"MCUSession(device={self.device_id}, user={self.user.username})"

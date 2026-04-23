@@ -14,4 +14,5 @@ urlpatterns = [
     path('mcu-log/', views.mcu_log_view, name='mcu_log'),
     path('api/test/<str:kind>/', views.test_notification, name='test_notification'),
     path('notifications/preferences/', views.notification_preferences, name='notification_preferences'),
+    path('mcu-login/', views.mcu_login_view, name='mcu_login'),
 ]

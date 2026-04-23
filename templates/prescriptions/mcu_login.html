@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>MCU Login – EasyMedRX</title>
+    <style>
+        body { font-family: Arial, sans-serif; background: #f8f9fa; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
+        .card { background: #fff; border: 1px solid #dee2e6; border-radius: 6px; padding: 36px 40px; width: 100%; max-width: 460px; }
+        .logo { text-align: center; margin-bottom: 24px; }
+        .logo h1 { margin: 0; font-size: 1.6em; color: #1E90FF; }
+        .logo p  { margin: 4px 0 0; font-size: .85em; color: #888; }
+        label { display: block; font-weight: bold; font-size: .88em; margin-bottom: 4px; margin-top: 14px; }
+        input[type=text], input[type=password], select {
+            width: 100%; padding: 9px 11px; border: 1px solid #ced4da;
+            border-radius: 4px; font-size: 1em; box-sizing: border-box;
+        }
+        .alert-error   { background: #f8d7da; border: 1px solid #f5c6cb; color: #721c24; padding: 10px 14px; border-radius: 4px; font-size: .88em; margin-top: 14px; }
+        .alert-success { background: #d4edda; border: 1px solid #c3e6cb; color: #155724; padding: 10px 14px; border-radius: 4px; font-size: .88em; margin-top: 14px; }
+        .btn-primary {
+            margin-top: 20px; width: 100%; padding: 10px;
+            background: #1E90FF; color: #fff; border: none;
+            border-radius: 4px; font-size: 1em; cursor: pointer;
+        }
+        .btn-primary:hover { background: #1a7de0; }
+        .btn-danger {
+            padding: 4px 10px; background: #c0392b; color: #fff; border: none;
+            border-radius: 4px; font-size: .82em; cursor: pointer;
+        }
+        .btn-danger:hover { background: #a93226; }
+        .sessions-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; font-size: .88em; }
+        .sessions-table th { background: #f0f4f8; padding: 6px 10px; text-align: left; border-bottom: 2px solid #dee2e6; }
+        .sessions-table td { padding: 6px 10px; border-bottom: 1px solid #f0f0f0; vertical-align: middle; }
+        .no-sessions { color: #888; font-size: .9em; text-align: center; margin-bottom: 20px; }
+        .section-title { font-weight: bold; font-size: .92em; color: #444; margin: 20px 0 8px; border-bottom: 1px solid #dee2e6; padding-bottom: 4px; }
+        .divider { border-top: 1px solid #dee2e6; margin: 20px 0; }
+        .back-link { display: block; text-align: center; margin-top: 16px; font-size: .85em; color: #888; text-decoration: none; }
+        .back-link:hover { color: #333; }
+        .hint { font-size: .8em; color: #888; margin-top: 4px; }
+    </style>
+</head>
+<body>
+<div class="card">
+    <div class="logo">
+        <h1>EasyMedRX</h1>
+        <p>MCU Login</p>
+    </div>
+
+    <!-- Active sessions per device -->
+    <div class="section-title">Active MCU Sessions</div>
+    {% if all_sessions %}
+    <table class="sessions-table">
+        <thead>
+            <tr><th>Device ID</th><th>Logged-in user</th><th>Since</th><th></th></tr>
+        </thead>
+        <tbody>
+        {% for session in all_sessions %}
+        <tr>
+            <td>{{ session.device_id }}</td>
+            <td>{{ session.user.username }}
+                {% if session.user.first_name or session.user.last_name %}
+                <br><small style="color:#888;">{{ session.user.first_name }} {{ session.user.last_name }}</small>
+                {% endif %}
+            </td>
+            <td style="white-space:nowrap;">{{ session.logged_in_at|date:"d M H:i" }}</td>
+            <td>
+                <form method="post" style="display:inline;">
+                    {% csrf_token %}
+                    <input type="hidden" name="action" value="logout">
+                    <input type="hidden" name="device_id" value="{{ session.device_id }}">
+                    <button type="submit" class="btn-danger">Log out</button>
+                </form>
+            </td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="no-sessions">No active MCU sessions.</p>
+    {% endif %}
+
+    {% if error %}
+    <div class="alert-error">{{ error }}</div>
+    {% endif %}
+    {% if success %}
+    <div class="alert-success">{{ success }}</div>
+    {% endif %}
+
+    <div class="divider"></div>
+    <div class="section-title">Log in a user for a device</div>
+
+    <form method="post">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="login">
+
+        <label for="id_device_id">Device ID</label>
+        {% if known_devices %}
+        <select id="id_device_id" name="device_id">
+            <option value="">— select a device —</option>
+            {% for d in known_devices %}
+            <option value="{{ d }}">{{ d }}</option>
+            {% endfor %}
+            <option value="__custom__">Other (type below)</option>
+        </select>
+        <input type="text" id="id_device_id_custom" name="device_id_custom" placeholder="e.g. Device1" style="margin-top:6px;display:none;">
+        <p class="hint">Select a registered device, or choose "Other" to type the device name.</p>
+        {% else %}
+        <input type="text" id="id_device_id" name="device_id" placeholder="e.g. Device1">
+        <p class="hint">Enter the device name sent by the MCU (e.g. Device1, Device2).</p>
+        {% endif %}
+
+        <label for="id_username">Username</label>
+        <input type="text" id="id_username" name="username" autofocus>
+        <label for="id_password">Password</label>
+        <input type="password" id="id_password" name="password">
+        <button type="submit" class="btn-primary">Set as MCU user for this device</button>
+    </form>
+
+    <a class="back-link" href="/">&#8592; Back to calendar</a>
+</div>
+
+{% if known_devices %}
+<script>
+(function () {
+    var sel    = document.getElementById('id_device_id');
+    var custom = document.getElementById('id_device_id_custom');
+    if (!sel) return;
+    sel.addEventListener('change', function () {
+        if (sel.value === '__custom__') {
+            custom.style.display = '';
+            custom.required = true;
+        } else {
+            custom.style.display = 'none';
+            custom.required = false;
+        }
+    });
+    // On submit, override device_id with custom input if needed
+    sel.closest('form').addEventListener('submit', function () {
+        if (sel.value === '__custom__') {
+            sel.value = custom.value.trim();
+        }
+    });
+})();
+</script>
+{% endif %}
+</body>
+</html>

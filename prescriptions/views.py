@@ -9,7 +9,7 @@ from django.contrib.auth.decorators import login_required
 from django.contrib.auth.models import User
 from django.shortcuts import render, redirect, get_object_or_404
 from django.utils.dateparse import parse_datetime
-from .models import Prescription, ErrorLog, PrescriptionLogging, UserProfile, NotificationPreference, DoseTime
+from .models import Prescription, ErrorLog, PrescriptionLogging, UserProfile, NotificationPreference, DoseTime, MCUSession
 from .forms import PrescriptionForm, CompartmentEditForm, NotificationPreferenceForm, DoseTimeFormSet
 import calendar
 from django.utils.timezone import now, make_aware, is_naive, localtime
@@ -356,22 +356,24 @@ def device_push(request):
         return _mcu_resp(resp, status=200)
 
     # ── onlineLogin ───────────────────────────────────────────────────────────
-    # MCU sends {"type":"onlineLogin", "username":"...", "password":"..."}
-    # Response: {"success": true, "uid": "<rfid_uid>"} or {"success": false}
+    # MCU sends {"type": "onlineLogin", "uid": "<rfid_uid>"}.
+    # The server finds the MCUSession whose user's RFID matches uid (i.e. the
+    # user who logged in via the MCU Login web page AND whose RFID was scanned).
+    # Returns the full dispense JSON — identical in shape to UpdateMCU.
     elif event_lower == 'onlinelogin':
-        username = data.get('username', '').strip()
-        password = data.get('password', '')
-
-        user = authenticate(request, username=username, password=password)
-        if user is None or not user.is_active:
-            return _mcu_resp({'uid': ''}, status=200)
+        if not uid:
+            return _mcu_resp({'error': 'uid required'}, status=200)
 
         try:
-            rfid_uid = user.profile.rfid_uid or ''
-        except Exception:
-            rfid_uid = ''
+            mcu_session = MCUSession.objects.select_related('user').get(
+                user__profile__rfid_uid__iexact=uid
+            )
+        except MCUSession.DoesNotExist:
+            return _mcu_resp({'error': 'no MCU session for this user'}, status=200)
 
-        return _mcu_resp({'uid': rfid_uid}, status=200)
+        mcu_user = mcu_session.user
+        prescriptions = Prescription.objects.filter(user=mcu_user).order_by('scheduled_time')
+        return _mcu_resp(_flat_mcu_response(uid, mcu_user, prescriptions, data), status=200)
 
     # ── Error ─────────────────────────────────────────────────────────────────
     # MCU sends {"type":"Error", "uid":..., "message":..., "time":...} for
@@ -830,5 +832,52 @@ def rename_medication(request):
         'form':              form,
         'mcu_connected':     mcu_connected,
         'success':           success,
+    })
+
+
+def mcu_login_view(request):
+    """Web page where a patient logs in as the active MCU dispense user for a device.
+
+    One user per device can be logged in at a time.  Logging in for a device
+    replaces any existing session for that device.  Multiple devices can each
+    have a different active user simultaneously.
+    The MCU onlineLogin event (carrying its own uid) reads this to know whose
+    prescriptions to dispense.
+    """
+    from .models import Device as _Device
+
+    all_sessions = MCUSession.objects.select_related('user').order_by('device_id')
+    known_devices = list(_Device.objects.values_list('device_id', flat=True).order_by('id'))
+    error   = None
+    success = None
+
+    if request.method == 'POST':
+        action    = request.POST.get('action', '')
+        device_id = request.POST.get('device_id', '').strip()
+
+        if action == 'logout' and device_id:
+            MCUSession.objects.filter(device_id=device_id).delete()
+            return redirect('mcu_login')
+
+        username = request.POST.get('username', '').strip()
+        password = request.POST.get('password', '')
+
+        if not device_id:
+            error = 'Please enter or select a device ID.'
+        else:
+            user = authenticate(request, username=username, password=password)
+            if user is None or not user.is_active:
+                error = 'Invalid username or password.'
+            else:
+                MCUSession.objects.filter(device_id=device_id).delete()
+                MCUSession.objects.create(user=user, device_id=device_id)
+                all_sessions = MCUSession.objects.select_related('user').order_by('device_id')
+                success = f'{user.username} is now logged in for device "{device_id}".'
+
+    return render(request, 'prescriptions/mcu_login.html', {
+        'all_sessions':  all_sessions,
+        'known_devices': known_devices,
+        'error':         error,
+        'success':       success,
     })
 
