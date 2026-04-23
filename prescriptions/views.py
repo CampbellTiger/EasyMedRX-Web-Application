@@ -152,27 +152,30 @@ COLOR_PALETTE = [
 
 
 def _flat_mcu_response(uid, user, prescriptions, request_data=None):
-    """Build the flat script0-3 / dose0-3 / stock0-3 / window0-3 response the MCU expects.
+    """Build the updateMCUProfile response the MCU expects.
 
-    Starts from a copy of request_data so any field the MCU sent (pword, time,
-    device1-4, etc.) is echoed back unchanged.  DB-authoritative fields are then
-    overlaid on top.  window{i} is the number of pills to dispense (dose_count).
+    Fields per slot (0-based, maps to container 1-4):
+      script{i}  — medication name
+      dose{i}    — pills per dose
+      stock{i}   — current stock
+      window{i}  — pills to dispense right now
+      device{i}  — device name the prescription belongs to
+    Plus top-level: uid, user, email, phone, time.
     """
-    # Map container number (1-4) → prescription.  container 1 = script0, etc.
     by_container = {
         p.container: p
         for p in prescriptions
         if p.container in (1, 2, 3, 4)
     }
 
-    # Echo everything the MCU sent, then override with server-authoritative values.
     resp = dict(request_data) if request_data else {}
     resp.update({
-        'type':  'UpdateMCU',
+        'type':  'updateMCUProfile',
         'uid':   uid,
         'user':  user.username,
         'email': user.email,
         'phone': getattr(getattr(user, 'profile', None), 'phone', ''),
+        'time':  localtime(now()).strftime('%Y-%m-%dT%H:%M:%S'),
     })
     for i in range(4):
         p = by_container.get(i + 1)   # container 1 → slot/index 0
@@ -180,8 +183,8 @@ def _flat_mcu_response(uid, user, prescriptions, request_data=None):
             resp[f'script{i}']  = p.medication_name
             resp[f'dose{i}']    = p.dose_count
             resp[f'stock{i}']   = p.stock_count
-            resp[f'window{i}']  = p.dose_count  # pills to dispense at this moment
-            # Log the dispense instruction sent to the MCU
+            resp[f'window{i}']  = p.dose_count
+            resp[f'device{i}']  = p.device.device_id if p.device else ''
             if p.dose_count > 0:
                 PrescriptionLogging.objects.create(
                     prescription=p,
@@ -195,6 +198,7 @@ def _flat_mcu_response(uid, user, prescriptions, request_data=None):
             resp[f'dose{i}']    = 0
             resp[f'stock{i}']   = 0
             resp[f'window{i}']  = 0
+            resp[f'device{i}']  = ''
     return resp
 
 
@@ -275,31 +279,18 @@ def device_push(request):
         except UserProfile.DoesNotExist:
             pass
 
-    # # Update email / phone from device if supplied. Dont need right now. MCU shouldn't update web application's stuff?
-    # if auth_user:
-    #     _sync_contact_info(auth_user, email, phone)
-
-    # ── UpdateMCU ────────────────────────────────────────────────────────────
-    if event_lower == 'updatemcu':
-        if not auth_user:
-            return _mcu_resp({'status': 'error', 'detail': 'unknown user'}, status=400)
-        prescriptions = Prescription.objects.filter(user=auth_user).order_by('scheduled_time')
-        return _mcu_resp(_flat_mcu_response(uid, auth_user, prescriptions, data), status=200)
 
     # ── updateMCUProfile ─────────────────────────────────────────────────────
-    # MCU sends this on every RFID scan to sync prescription data.
-    # If no username is supplied, look up the user by their RFID UID
-    # (first-time registration via requestNewProfile on the MCU).
-    elif event_lower == 'updatemcuprofile':
+    # MCU sends this on every RFID scan.  Looks up the user by RFID uid and
+    # returns their full prescription data.
+    if event_lower == 'updatemcuprofile':
         if not auth_user:
             return _mcu_resp({'status': 'error', 'detail': 'unknown user'}, status=400)
 
         prescriptions = list(
-            Prescription.objects.filter(user=auth_user).order_by('scheduled_time')
+            Prescription.objects.select_related('device').filter(user=auth_user).order_by('scheduled_time')
         )
-        resp = _flat_mcu_response(uid, auth_user, prescriptions, data)
-        resp['type'] = 'updateMCUProfile'
-        return _mcu_resp(resp, status=200)
+        return _mcu_resp(_flat_mcu_response(uid, auth_user, prescriptions, data), status=200)
 
     # ── trustedUIDs ───────────────────────────────────────────────────────────
     # MCU requests the RFID whitelist. Returns up to 8 UIDs from UserProfile.rfid_uid.
@@ -339,11 +330,14 @@ def device_push(request):
             if p and stock is not None:
                 if medicine.lower() == p.medication_name.lower():
                     # Names match — MCU is in sync. Apply add_stock bonus then reset, capped at MAX_STOCK.
+                    old_stock     = p.stock_count
                     p.stock_count = min(int(stock) + p.add_stock, MAX_STOCK)
                     p.add_stock   = 0
                     p.save(update_fields=['stock_count', 'add_stock'])
 
-                    if p.stock_count < 5:
+                    # Only notify when stock first crosses below threshold (transition)
+                    # and only during afternoon hours to avoid night-time spam.
+                    if p.stock_count < 5 and old_stock >= 5 and localtime(now()).hour >= 12:
                         from .consumers import notify_user
                         prefs, _ = NotificationPreference.objects.get_or_create(user=p.user)
                         if prefs.low_stock_alert_enabled:
@@ -356,24 +350,32 @@ def device_push(request):
         return _mcu_resp(resp, status=200)
 
     # ── onlineLogin ───────────────────────────────────────────────────────────
-    # MCU sends {"type": "onlineLogin", "uid": "<rfid_uid>"}.
-    # The server finds the MCUSession whose user's RFID matches uid (i.e. the
-    # user who logged in via the MCU Login web page AND whose RFID was scanned).
-    # Returns the full dispense JSON — identical in shape to UpdateMCU.
+    # MCU sends {"type": "onlineLogin", "uid": "<device_uid>"}.
+    # Used when a patient has no RFID card — they log in via the MCU Login web
+    # page instead.  The server looks up whoever is waiting in an MCUSession for
+    # this device (matched by device_id == uid) and returns the full UpdateMCU
+    # dispense JSON.  The session is deleted after one successful read so the
+    # MCU's regular polling doesn't keep re-triggering it.
     elif event_lower == 'onlinelogin':
-        if not uid:
-            return _mcu_resp({'error': 'uid required'}, status=200)
+        mcu_session = (
+            MCUSession.objects.select_related('user').filter(device_id=uid).first()
+            if uid else
+            MCUSession.objects.select_related('user').first()
+        )
 
-        try:
-            mcu_session = MCUSession.objects.select_related('user').get(
-                user__profile__rfid_uid__iexact=uid
-            )
-        except MCUSession.DoesNotExist:
-            return _mcu_resp({'error': 'no MCU session for this user'}, status=200)
+        if mcu_session is None:
+            return _mcu_resp({'error': 'no MCU session'}, status=200)
 
         mcu_user = mcu_session.user
-        prescriptions = Prescription.objects.filter(user=mcu_user).order_by('scheduled_time')
-        return _mcu_resp(_flat_mcu_response(uid, mcu_user, prescriptions, data), status=200)
+        try:
+            user_rfid = mcu_user.profile.rfid_uid or ''
+        except Exception:
+            user_rfid = ''
+
+        prescriptions = Prescription.objects.select_related('device').filter(user=mcu_user).order_by('scheduled_time')
+        resp = _flat_mcu_response(user_rfid, mcu_user, prescriptions, data)
+        mcu_session.delete()  # one-shot: clear so repeat polls don't re-trigger
+        return _mcu_resp(resp, status=200)
 
     # ── Error ─────────────────────────────────────────────────────────────────
     # MCU sends {"type":"Error", "uid":..., "message":..., "time":...} for
@@ -512,8 +514,8 @@ def device_push(request):
     else:
         return _mcu_resp({
             'error':           f"Unknown type '{event_type}'",
-            'supported_types': ['UpdateMCU', 'updateMCUProfile', 'trustedUIDs',
-                                'updateWebAppStock', 'Error', 'ErrorWebApp', 'updateWebApp'],
+            'supported_types': ['updateMCUProfile', 'trustedUIDs',
+                                'updateWebAppStock', 'onlineLogin', 'Error', 'ErrorWebApp', 'updateWebApp'],
         }, status=400)
 
 
@@ -722,7 +724,7 @@ def rename_medication(request):
                     # Sync DoseTime records from POST data
                     import datetime as _dt
                     doses_per_day = saved.doses_per_day or 1
-                    existing_dose_times = list(saved.dose_times.order_by('order'))
+                    existing_dose_times = list(saved.dose_times.order_by('time_of_day'))
 
                     # Calculate evenly spaced fallback times from the first dose's time
                     first_time_str = request.POST.get('dose_time_1', '').strip()
@@ -754,7 +756,9 @@ def rename_medication(request):
                                 label=label_val,
                             )
                     # Remove extras if doses_per_day was reduced
-                    saved.dose_times.order_by('-time_of_day')[doses_per_day:].delete()
+                    extra_ids = list(saved.dose_times.order_by('-time_of_day').values_list('id', flat=True)[doses_per_day:])
+                    if extra_ids:
+                        DoseTime.objects.filter(id__in=extra_ids).delete()
 
                     # Save RFID UID to the patient's UserProfile
                     rfid_uid = form.cleaned_data.get('rfid_uid', '').strip()

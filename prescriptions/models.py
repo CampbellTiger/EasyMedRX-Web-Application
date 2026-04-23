@@ -17,6 +17,17 @@ class UserProfile(models.Model):
         help_text='RFID card UID for this patient (e.g. 87447d33)',
     )
 
+    def save(self, *args, **kwargs):
+        update_fields = kwargs.get('update_fields')
+        super().save(*args, **kwargs)
+        # Keep RFIDCard.assigned_to in sync with rfid_uid whenever it changes.
+        if update_fields is None or 'rfid_uid' in update_fields:
+            # Clear any card previously assigned to this user that no longer matches.
+            RFIDCard.objects.filter(assigned_to=self.user).exclude(uid=self.rfid_uid).update(assigned_to=None)
+            # Assign the new card (if one is set).
+            if self.rfid_uid:
+                RFIDCard.objects.filter(uid=self.rfid_uid).update(assigned_to=self.user)
+
     def __str__(self):
         return f"Profile({self.user.username})"
 
@@ -175,6 +186,32 @@ class RFIDCard(models.Model):
 
     class Meta:
         ordering = ['id']
+
+    def save(self, *args, **kwargs):
+        # Fetch previous assigned_to so we can clear the old user's profile.
+        try:
+            old_user = RFIDCard.objects.get(pk=self.pk).assigned_to
+        except RFIDCard.DoesNotExist:
+            old_user = None
+
+        super().save(*args, **kwargs)
+
+        # Clear the RFID uid from any user who previously held this card.
+        if old_user and old_user != self.assigned_to:
+            try:
+                profile = old_user.profile
+                if profile.rfid_uid == self.uid:
+                    profile.rfid_uid = ''
+                    profile.save(update_fields=['rfid_uid'])
+            except UserProfile.DoesNotExist:
+                pass
+
+        # Set the new user's profile rfid_uid.
+        if self.assigned_to:
+            profile, _ = UserProfile.objects.get_or_create(user=self.assigned_to)
+            if profile.rfid_uid != self.uid:
+                profile.rfid_uid = self.uid
+                profile.save(update_fields=['rfid_uid'])
 
     def __str__(self):
         return f"RFIDCard({self.uid})"

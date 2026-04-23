@@ -151,16 +151,42 @@ def send_due_prescription_notifications():
             continue
 
         prefs, _ = NotificationPreference.objects.get_or_create(user=p.user)
-        if prefs.prescription_reminder_enabled and prefs.desktop_notification_enabled:
+        if prefs.prescription_reminder_enabled:
             label_suffix = f' ({dt.label})' if dt.label else ''
-            try:
-                notify_user(
-                    p.user.id,
-                    f"Medication window open: {_mask(p.medication_name)}{label_suffix} "
-                    f"can be taken now (scheduled {dt.time_of_day.strftime('%I:%M %p')})."
+            masked_med   = _mask(p.medication_name)
+            if prefs.desktop_notification_enabled:
+                try:
+                    notify_user(
+                        p.user.id,
+                        f"Medication window open: {masked_med}{label_suffix} "
+                        f"can be taken now (scheduled {dt.time_of_day.strftime('%I:%M %p')})."
+                    )
+                except Exception:
+                    pass
+            if prefs.email_enabled and p.user.email:
+                app_url       = getattr(settings, 'APP_BASE_URL', 'http://localhost:8000')
+                display_name  = _mask(p.user.first_name or p.user.username)
+                end_date_line = f"End date:   {p.end_date}\n" if p.end_date else ""
+                body = (
+                    f"Hello {display_name},\n\n"
+                    f"Your medication window is now open — you can take your dose.\n\n"
+                    f"Medication:  {masked_med}{label_suffix}\n"
+                    f"Dosage:      {_mask(p.dosage)}\n"
+                    f"Scheduled:   {dt.time_of_day.strftime('%I:%M %p')}\n"
+                    f"Window:      {p.window_minutes} minutes\n"
+                    f"Start date:  {p.start_date}\n"
+                    f"{end_date_line}"
+                    f"Doctor:      {_mask(p.prescribing_doctor)}\n"
+                    f"\n─────────────────────────────\n"
+                    f"Open EasyMedRX: {app_url}\n"
                 )
-            except Exception:
-                pass
+                send_mail(
+                    subject=f"Medication Window Open: {masked_med}",
+                    message=body,
+                    from_email=settings.DEFAULT_FROM_EMAIL,
+                    recipient_list=[p.user.email],
+                    fail_silently=True,
+                )
 
     # ── Window warning (5 min before expiry) and missed notifications ─────────
     # Query all active DoseTimes directly — no dependency on REMINDER_SENT so
@@ -228,6 +254,30 @@ def send_due_prescription_notifications():
                     event_type='WARNING',
                     scheduled_time=dose_time_aware,
                 )
+                if prefs.email_enabled and p.user.email:
+                    app_url       = getattr(settings, 'APP_BASE_URL', 'http://localhost:8000')
+                    display_name  = _mask(p.user.first_name or p.user.username)
+                    end_date_line = f"End date:   {p.end_date}\n" if p.end_date else ""
+                    body = (
+                        f"Hello {display_name},\n\n"
+                        f"You have 5 minutes left to take your medication before the window closes.\n\n"
+                        f"Medication:  {masked_med}{label_suffix}\n"
+                        f"Dosage:      {_mask(p.dosage)}\n"
+                        f"Scheduled:   {dt.time_of_day.strftime('%I:%M %p')}\n"
+                        f"Window closes at: {missed_at.strftime('%I:%M %p')}\n"
+                        f"Start date:  {p.start_date}\n"
+                        f"{end_date_line}"
+                        f"Doctor:      {_mask(p.prescribing_doctor)}\n"
+                        f"\n─────────────────────────────\n"
+                        f"Open EasyMedRX: {app_url}\n"
+                    )
+                    send_mail(
+                        subject=f"5 Minutes Left: {masked_med}",
+                        message=body,
+                        from_email=settings.DEFAULT_FROM_EMAIL,
+                        recipient_list=[p.user.email],
+                        fail_silently=True,
+                    )
 
         # Missed notification — fires at dose_time + window_minutes if not dispensed
         if missed_at.hour == now.hour and missed_at.minute == now.minute:

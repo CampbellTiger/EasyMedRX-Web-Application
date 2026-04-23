@@ -42,7 +42,7 @@
 <div class="card">
     <div class="logo">
         <h1>EasyMedRX</h1>
-        <p>MCU Login</p>
+        <p>Access prescriptions without RFID card</p>
     </div>
 
     <!-- Active sessions per device -->
@@ -102,10 +102,10 @@
             <option value="__custom__">Other (type below)</option>
         </select>
         <input type="text" id="id_device_id_custom" name="device_id_custom" placeholder="e.g. Device1" style="margin-top:6px;display:none;">
-        <p class="hint">Select a registered device, or choose "Other" to type the device name.</p>
+        <p class="hint">Select which device you are sitting at.</p>
         {% else %}
         <input type="text" id="id_device_id" name="device_id" placeholder="e.g. Device1">
-        <p class="hint">Enter the device name sent by the MCU (e.g. Device1, Device2).</p>
+        <p class="hint">Enter the name of the device you are sitting at (e.g. Device1).</p>
         {% endif %}
 
         <label for="id_username">Username</label>

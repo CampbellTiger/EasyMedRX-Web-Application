@@ -1,3 +1,4 @@
+from django import forms as _forms
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from django.contrib.auth.models import User
@@ -5,8 +6,46 @@ from django.contrib.admin.models import LogEntry
 from .models import Prescription, PrescriptionLogging, ErrorLog, FailedLoginLog, UserProfile, RFIDCard, Device, DoseTime
 
 
+class UserProfileInlineForm(_forms.ModelForm):
+    rfid_uid = _forms.ChoiceField(
+        required=False,
+        label='RFID UID',
+        choices=[],
+    )
+
+    class Meta:
+        model  = UserProfile
+        fields = ('phone', 'rfid_uid')
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        choices = [('', '— none —')]
+        for card in RFIDCard.objects.select_related('assigned_to').order_by('uid'):
+            if card.assigned_to:
+                label = f"{card.uid}  — assigned to {card.assigned_to.username}"
+            else:
+                label = f"{card.uid}  — available"
+            choices.append((card.uid, label))
+        self.fields['rfid_uid'].choices = choices
+
+    def clean_rfid_uid(self):
+        rfid_uid = self.cleaned_data.get('rfid_uid', '').strip()
+        if not rfid_uid:
+            return rfid_uid
+        qs = UserProfile.objects.filter(rfid_uid=rfid_uid)
+        if self.instance and self.instance.pk:
+            qs = qs.exclude(pk=self.instance.pk)
+        if qs.exists():
+            taken_by = qs.first().user.username
+            raise _forms.ValidationError(
+                f"This RFID card is already assigned to {taken_by}."
+            )
+        return rfid_uid
+
+
 class UserProfileInline(admin.StackedInline):
     model = UserProfile
+    form  = UserProfileInlineForm
     can_delete = False
     verbose_name_plural = 'Profile'
     fields = ('phone', 'rfid_uid')
@@ -24,7 +63,8 @@ admin.site.register(User, UserAdmin)
 class RFIDCardAdmin(admin.ModelAdmin):
     list_display  = ('uid', 'assigned_to')
     search_fields = ('uid', 'assigned_to__username')
-    autocomplete_fields = ('assigned_to',)
+    # Plain select so the "-------" (clear) option is always visible.
+    raw_id_fields = ()
 
 
 @admin.register(Device)

@@ -1,6 +1,6 @@
 from django import forms
 from django.forms import modelformset_factory
-from .models import Prescription, NotificationPreference, DoseTime
+from .models import Prescription, NotificationPreference, DoseTime, UserProfile, RFIDCard
 
 class PrescriptionForm(forms.ModelForm):
     class Meta:
@@ -39,12 +39,16 @@ class CompartmentEditForm(forms.ModelForm):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        # Build UID choices from all UserProfiles that have an rfid_uid set
-        from .models import UserProfile
+        # Build UID choices from the RFIDCard table (physical cards in the system).
+        # Show unassigned cards first, then already-assigned ones so the admin can
+        # see what's available at a glance.
         uid_choices = [('', '— none —')]
-        for profile in UserProfile.objects.exclude(rfid_uid='').select_related('user'):
-            label = f"{profile.rfid_uid}  ({profile.user.username})"
-            uid_choices.append((profile.rfid_uid, label))
+        for card in RFIDCard.objects.select_related('assigned_to').order_by('uid'):
+            if card.assigned_to:
+                label = f"{card.uid}  — assigned to {card.assigned_to.username}"
+            else:
+                label = f"{card.uid}  — available"
+            uid_choices.append((card.uid, label))
         self.fields['rfid_uid'].choices = uid_choices
 
         # Pre-format the scheduled_time initial value for datetime-local
@@ -60,6 +64,21 @@ class CompartmentEditForm(forms.ModelForm):
                 self.initial['rfid_uid'] = self.instance.user.profile.rfid_uid
             except Exception:
                 self.initial['rfid_uid'] = ''
+
+    def clean_rfid_uid(self):
+        rfid_uid = self.cleaned_data.get('rfid_uid', '').strip()
+        if not rfid_uid:
+            return rfid_uid
+        # Reject if this UID is already assigned to a different user's profile
+        qs = UserProfile.objects.filter(rfid_uid=rfid_uid)
+        if self.instance and self.instance.pk and self.instance.user_id:
+            qs = qs.exclude(user_id=self.instance.user_id)
+        if qs.exists():
+            taken_by = qs.first().user.username
+            raise forms.ValidationError(
+                f"This RFID card is already assigned to {taken_by}."
+            )
+        return rfid_uid
 
     def clean_stock_count(self):
         value = self.cleaned_data.get('stock_count', 0)
