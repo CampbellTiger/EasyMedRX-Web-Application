@@ -304,6 +304,9 @@ def send_due_prescription_notifications():
                     scheduled_time=dose_time_aware,
                 )
 
+                p.ready = False
+                p.save(update_fields=['ready'])
+
                 # Email alert for missed dose
                 if prefs.email_enabled and p.user.email:
                     display_name  = _mask(p.user.first_name or p.user.username)

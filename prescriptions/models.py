@@ -57,8 +57,8 @@ class Prescription(models.Model):
     medication_name    = models.CharField(max_length=200)
     dosage             = models.CharField(max_length=100)
     dose_count         = models.PositiveIntegerField(default=1)
-    stock_count        = models.PositiveIntegerField(default=0, validators=[MaxValueValidator(MAX_STOCK)])
-    add_stock          = models.PositiveIntegerField(default=0, validators=[MaxValueValidator(MAX_STOCK)], help_text='Pills to add on top of the next MCU stock report (capped so total does not exceed 30)')
+    stock_count        = models.PositiveIntegerField(default=0)
+    add_stock          = models.PositiveIntegerField(default=0, help_text='Pills to add to stock immediately on save')
     doses_per_day      = models.PositiveSmallIntegerField(default=1, help_text='Number of doses per day')
     window_before_minutes = models.PositiveSmallIntegerField(default=15, validators=[MinValueValidator(5)], help_text='Minutes before dose time the window opens (minimum 5)')
     window_minutes        = models.PositiveSmallIntegerField(default=30, validators=[MinValueValidator(5)], help_text='Minutes after dose time before window expires (minimum 5)')
@@ -215,6 +215,7 @@ class RFIDCard(models.Model):
 
     def __str__(self):
         return f"RFIDCard({self.uid})"
+
 
 
 class MCUSession(models.Model):

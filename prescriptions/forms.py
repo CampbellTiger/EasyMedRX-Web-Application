@@ -80,22 +80,8 @@ class CompartmentEditForm(forms.ModelForm):
             )
         return rfid_uid
 
-    def clean_stock_count(self):
-        value = self.cleaned_data.get('stock_count', 0)
-        if value > 30:
-            raise forms.ValidationError("Stock cannot exceed 30 pills.")
-        return value
-
     def clean_add_stock(self):
-        add   = self.cleaned_data.get('add_stock', 0)
-        stock = self.cleaned_data.get('stock_count') or (self.instance.stock_count if self.instance else 0)
-        if stock + add > 30:
-            allowed = max(0, 30 - stock)
-            raise forms.ValidationError(
-                f"Adding {add} would exceed the 30-pill limit. "
-                f"Maximum you can add is {allowed}."
-            )
-        return add
+        return self.cleaned_data.get('add_stock', 0)
 
 
 class NotificationPreferenceForm(forms.ModelForm):

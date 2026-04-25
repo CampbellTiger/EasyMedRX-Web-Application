@@ -214,8 +214,20 @@ print()
 
 # ── Start services ─────────────────────────────────────────────────────────────
 
+def _rotate_log(path, keep=3):
+    """Rename path → path.1 → path.2 … up to `keep` backups, then truncate."""
+    for i in range(keep - 1, 0, -1):
+        src = f"{path}.{i}"
+        dst = f"{path}.{i + 1}"
+        if os.path.exists(src):
+            os.replace(src, dst)
+    if os.path.exists(path):
+        os.replace(path, f"{path}.1")
+
 print("Starting services...")
 os.makedirs(os.path.join(BASE_DIR, "logs"), exist_ok=True)
+for _name in ["celery_beat.log", "celery_worker.log", "daphne.log", "daphne_ssl.log"]:
+    _rotate_log(os.path.join(BASE_DIR, "logs", _name))
 
 beat_log   = open(os.path.join(BASE_DIR, "logs", "celery_beat.log"),   "w")
 worker_log = open(os.path.join(BASE_DIR, "logs", "celery_worker.log"), "w")

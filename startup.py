@@ -255,13 +255,25 @@ VENV_BIN = os.path.join(BASE_DIR, "venv", "bin")
 CELERY  = os.path.join(VENV_BIN, "celery")
 DAPHNE  = os.path.join(VENV_BIN, "daphne")
 
+def _rotate_log(path, keep=3):
+    """Rename path → path.1 → path.2 … up to `keep` backups, then truncate."""
+    for i in range(keep - 1, 0, -1):
+        src = f"{path}.{i}"
+        dst = f"{path}.{i + 1}"
+        if os.path.exists(src):
+            os.replace(src, dst)
+    if os.path.exists(path):
+        os.replace(path, f"{path}.1")
+
 print("Starting services...")
 os.makedirs("logs", exist_ok=True)
+for _log in ["logs/celery_beat.log", "logs/celery_worker.log", "logs/daphne.log", "logs/daphne_ssl.log"]:
+    _rotate_log(_log)
+
 beat_log   = open("logs/celery_beat.log",   "w")
 worker_log = open("logs/celery_worker.log", "w")
 daphne_log = open("logs/daphne.log",        "w")
-
-ssl_log = open("logs/daphne_ssl.log", "w")
+ssl_log    = open("logs/daphne_ssl.log",    "w")
 
 subprocess.Popen([CELERY, "-A", "prescription_system", "beat",   "--loglevel=info"],              stdout=beat_log,   stderr=beat_log,   start_new_session=True)
 subprocess.Popen([CELERY, "-A", "prescription_system", "worker", "-n", "worker1@%h", "--loglevel=info"], stdout=worker_log, stderr=worker_log, start_new_session=True)

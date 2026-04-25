@@ -1,7 +1,9 @@
 import os
 import time
 import json as _json
-from datetime import datetime
+import logging
+import logging.handlers
+from datetime import datetime, timedelta
 
 from django.contrib.admin.views.decorators import staff_member_required
 from django.contrib.auth import authenticate
@@ -25,15 +27,30 @@ _MCU_HEARTBEAT_FILE = os.path.join(_BASE_DIR, 'logs', 'mcu_heartbeat.txt')
 MAX_STOCK = 30
 
 
-def _mcu_log(direction, data):
-    """Append one traffic entry to mcu_traffic.log."""
-    try:
-        ts   = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        body = _json.dumps(data, indent=2) if isinstance(data, dict) else repr(data)
-        entry = f"[{ts}] {direction}\n{body}\n{'─' * 60}\n"
+def _get_mcu_logger():
+    """Return a rotating file logger for MCU traffic (500 KB × 5 backups)."""
+    logger = logging.getLogger('mcu_traffic')
+    if not logger.handlers:
         os.makedirs(os.path.dirname(_MCU_TRAFFIC_LOG), exist_ok=True)
-        with open(_MCU_TRAFFIC_LOG, 'a') as f:
-            f.write(entry)
+        handler = logging.handlers.RotatingFileHandler(
+            _MCU_TRAFFIC_LOG,
+            maxBytes=500 * 1024,
+            backupCount=5,
+            encoding='utf-8',
+        )
+        handler.setFormatter(logging.Formatter('%(message)s'))
+        logger.addHandler(handler)
+        logger.setLevel(logging.DEBUG)
+        logger.propagate = False
+    return logger
+
+def _mcu_log(direction, data):
+    """Append one traffic entry to mcu_traffic.log with automatic rotation."""
+    try:
+        ts    = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        body  = _json.dumps(data, indent=2) if isinstance(data, dict) else repr(data)
+        entry = f"[{ts}] {direction}\n{body}\n{'─' * 60}"
+        _get_mcu_logger().debug(entry)
     except Exception:
         pass
 
@@ -41,7 +58,7 @@ def _mcu_log(direction, data):
 def _mcu_resp(data, status=200):
     """Log the outgoing response then return a JsonResponse."""
     _mcu_log('SERVER → MCU', data)
-    return JsonResponse(data, status=status)
+    return JsonResponse(data, status=status, json_dumps_params={'separators': (',', ':')})
 
 
 # ── MCU connection flag ───────────────────────────────────────────────────────
@@ -143,7 +160,6 @@ def notification_preferences(request):
 COLOR_PALETTE = [
     "#1E90FF",  # blue
     "#28a745",  # green
-    "#FFC107",  # yellow
     "#FF5733",  # orange-red
     "#6f42c1",  # purple
     "#fd7e14",  # orange
@@ -152,54 +168,84 @@ COLOR_PALETTE = [
 
 
 def _flat_mcu_response(uid, user, prescriptions, request_data=None):
-    """Build the updateMCUProfile response the MCU expects.
-
-    Fields per slot (0-based, maps to container 1-4):
-      script{i}  — medication name
-      dose{i}    — pills per dose
-      stock{i}   — current stock
-      window{i}  — pills to dispense right now
-      device{i}  — device name the prescription belongs to
-    Plus top-level: uid, user, email, phone, time.
     """
+    Build the updateMCUProfile response the MCU expects.
+    Strictly maintains the input format with only essential modifications.
+    """
+    # Prepare a response dictionary using the input data
+    resp = request_data.copy() if request_data else {}
+    
+    # Ensure basic required fields are set
+    resp.update({
+        'type': 'updateMCUProfile',
+        'uid': uid,
+        'user': user.username,
+        'pword': user.password,
+        'email': user.email,
+    })
+
+    # Prepare prescriptions by container
     by_container = {
         p.container: p
         for p in prescriptions
         if p.container in (1, 2, 3, 4)
     }
 
-    resp = dict(request_data) if request_data else {}
-    resp.update({
-        'type':  'updateMCUProfile',
-        'uid':   uid,
-        'user':  user.username,
-        'email': user.email,
-        'phone': getattr(getattr(user, 'profile', None), 'phone', ''),
-        'time':  localtime(now()).strftime('%Y-%m-%dT%H:%M:%S'),
-    })
+    # Populate script, dose, window, and device fields for each slot
     for i in range(4):
-        p = by_container.get(i + 1)   # container 1 → slot/index 0
-        if p:
-            resp[f'script{i}']  = p.medication_name
-            resp[f'dose{i}']    = p.dose_count
-            resp[f'stock{i}']   = p.stock_count
-            resp[f'window{i}']  = p.dose_count
-            resp[f'device{i}']  = p.device.device_id if p.device else ''
-            if p.dose_count > 0:
-                PrescriptionLogging.objects.create(
-                    prescription=p,
-                    user=user,
-                    event_type='DISPENSE_SENT',
-                    scheduled_time=now(),
-                    quantity=p.dose_count,
-                )
+        p = by_container.get(i + 1)  # container 1 → slot/index 0
+        
+        # Script (medication name)
+        resp[f'script{i}'] = p.medication_name if p else ''
+        
+        # Dose count
+        resp[f'dose{i}'] = p.dose_count if p else 0
+        
+        # Window (amount to dispense)
+        if p and p.ready:
+            # Determine if the prescription is in its active window
+            resp[f'window{i}'] = p.dose_count
+            
+            # Optional: Log the dispensing event
+            PrescriptionLogging.objects.create(
+                prescription=p,
+                user=user,
+                event_type='DISPENSE_SENT',
+                scheduled_time=now(),
+                quantity=p.dose_count,
+            )
         else:
-            resp[f'script{i}']  = ''
-            resp[f'dose{i}']    = 0
-            resp[f'stock{i}']   = 0
-            resp[f'window{i}']  = 0
-            resp[f'device{i}']  = ''
+            resp[f'window{i}'] = 0
+        
+        # Device
+        resp[f'device{i}'] = p.device.device_id if p and p.device else ''
+
+    # Optional: Add phone number if available
+    try:
+        resp['phone'] = user.profile.phone or ''
+    except:
+        resp['phone'] = ''
+
+    # Optional: Add stock counts if they were in the original request
+    for i in range(4):
+        p = by_container.get(i + 1)
+        resp[f'stock{i}'] = p.stock_count if p else 0
+
     return resp
+
+def _in_active_window(prescription):
+    """Return True if the current local time falls within any dose window."""
+    local_now = localtime(now())
+    for dt in prescription.dose_times.all():
+        dose_start = local_now.replace(
+            hour=dt.time_of_day.hour,
+            minute=dt.time_of_day.minute,
+            second=0, microsecond=0,
+        )
+        dose_end = dose_start + timedelta(minutes=prescription.window_minutes)
+        if dose_start <= local_now <= dose_end:
+            return True
+    return False
 
 
 def _sync_contact_info(user, email, phone):
@@ -288,7 +334,10 @@ def device_push(request):
             return _mcu_resp({'status': 'error', 'detail': 'unknown user'}, status=400)
 
         prescriptions = list(
-            Prescription.objects.select_related('device').filter(user=auth_user).order_by('scheduled_time')
+            Prescription.objects.select_related('device')
+            .prefetch_related('dose_times')
+            .filter(user=auth_user)
+            .order_by('scheduled_time')
         )
         return _mcu_resp(_flat_mcu_response(uid, auth_user, prescriptions, data), status=200)
 
@@ -329,53 +378,40 @@ def device_push(request):
 
             if p and stock is not None:
                 if medicine.lower() == p.medication_name.lower():
-                    # Names match — MCU is in sync. Apply add_stock bonus then reset, capped at MAX_STOCK.
-                    old_stock     = p.stock_count
-                    p.stock_count = min(int(stock) + p.add_stock, MAX_STOCK)
-                    p.add_stock   = 0
-                    p.save(update_fields=['stock_count', 'add_stock'])
+                    reported = int(stock)
+                    # Only accept a decrease: MCU reporting fewer pills than the DB
+                    # means pills were dispensed. Increases and equal values are ignored
+                    # so the MCU can never overwrite stock that was added via the web form.
+                    # add_stock is now applied immediately on form save, not deferred here.
+                    if 0 < reported < p.stock_count:
+                        p.stock_count = reported
+                        p.save(update_fields=['stock_count'])
 
-                    # Only notify when stock first crosses below threshold (transition)
-                    # and only during afternoon hours to avoid night-time spam.
-                    if p.stock_count < 5 and old_stock >= 5 and localtime(now()).hour >= 12:
-                        from .consumers import notify_user
-                        prefs, _ = NotificationPreference.objects.get_or_create(user=p.user)
-                        if prefs.low_stock_alert_enabled:
-                            notify_user(p.user.id, f"Low stock: {p.medication_name} has {p.stock_count} pill(s) remaining.")
+                        # Low-stock alert is handled by the post_save signal on Prescription.
                 # If names don't match the MCU is stale; return DB's name so it updates.
-
             resp[f'medicine{i}'] = p.medication_name if p else medicine
             resp[f'stock{i}']    = p.stock_count if p else 0
 
         return _mcu_resp(resp, status=200)
 
     # ── onlineLogin ───────────────────────────────────────────────────────────
-    # MCU sends {"type": "onlineLogin", "uid": "<device_uid>"}.
-    # Used when a patient has no RFID card — they log in via the MCU Login web
-    # page instead.  The server looks up whoever is waiting in an MCUSession for
-    # this device (matched by device_id == uid) and returns the full UpdateMCU
-    # dispense JSON.  The session is deleted after one successful read so the
-    # MCU's regular polling doesn't keep re-triggering it.
+    # MCU sends {"type": "onlineLogin", "uid": ""} (empty uid).
+    # The web app looks up whoever is currently logged in via the MCU Login page
+    # (MCUSession) and responds with that user's RFID UID.  The MCU then uses
+    # that UID in a follow-up updateMCUProfile scan — it does not need the full
+    # prescription payload here.  Session is deleted after one read (one-shot).
     elif event_lower == 'onlinelogin':
-        mcu_session = (
-            MCUSession.objects.select_related('user').filter(device_id=uid).first()
-            if uid else
-            MCUSession.objects.select_related('user').first()
-        )
+        mcu_session = MCUSession.objects.select_related('user__profile').first()
 
         if mcu_session is None:
-            return _mcu_resp({'error': 'no MCU session'}, status=200)
+            return _mcu_resp({'type': 'onlineLogin', 'uid': ''}, status=200)
 
-        mcu_user = mcu_session.user
         try:
-            user_rfid = mcu_user.profile.rfid_uid or ''
+            user_rfid = mcu_session.user.profile.rfid_uid or ''
         except Exception:
             user_rfid = ''
 
-        prescriptions = Prescription.objects.select_related('device').filter(user=mcu_user).order_by('scheduled_time')
-        resp = _flat_mcu_response(user_rfid, mcu_user, prescriptions, data)
-        mcu_session.delete()  # one-shot: clear so repeat polls don't re-trigger
-        return _mcu_resp(resp, status=200)
+        return _mcu_resp({'type': 'onlineLogin', 'uid': user_rfid}, status=200)
 
     # ── Error ─────────────────────────────────────────────────────────────────
     # MCU sends {"type":"Error", "uid":..., "message":..., "time":...} for
@@ -419,6 +455,37 @@ def device_push(request):
 
     # ── updateWebApp ─────────────────────────────────────────────────────────
     elif event_lower == 'updatewebapp':
+
+        # ── dispPills format ──────────────────────────────────────────────────
+        # MCU sends dispPills0..3 indicating how many pills were dispensed per
+        # container slot.  Decrement stock for each non-zero slot and log a
+        # DISPENSE_SENT event for the matched prescription.
+        disp_keys = [k for k in data if k.startswith('dispPills')]
+        if disp_keys:
+            qs = Prescription.objects.filter(user=auth_user) if auth_user else Prescription.objects.all()
+            by_container = {
+                p.container: p
+                for p in qs
+                if p.container in (1, 2, 3, 4)
+            }
+            for i in range(4):
+                dispensed = int(data.get(f'dispPills{i}', 0) or 0)
+                if dispensed <= 0:
+                    continue
+                p = by_container.get(i + 1)
+                if not p:
+                    continue
+                p.stock_count = max(p.stock_count - dispensed, 0)
+                p.save(update_fields=['stock_count'])
+                PrescriptionLogging.objects.create(
+                    prescription=p,
+                    user=p.user,
+                    event_type='DISPENSE_SENT',
+                    scheduled_time=now(),
+                    quantity=dispensed,
+                )
+            return _mcu_resp({'status': 'confirmed', 'type': 'updateWebApp'}, status=200)
+
         events = data.get('events')
 
         if not isinstance(events, list) or len(events) == 0:
@@ -521,7 +588,7 @@ def device_push(request):
 
 def prescription_events(request):
     from datetime import timedelta
-
+  
     # Auto-create a DoseTime from scheduled_time for any prescription missing one
     for p in Prescription.objects.filter(dose_times__isnull=True):
         DoseTime.objects.create(
@@ -529,29 +596,30 @@ def prescription_events(request):
             time_of_day=localtime(p.scheduled_time).time(),
             label='',
         )
-
+  
     qs = DoseTime.objects.select_related('prescription__user')
     if not request.user.is_staff:
         qs = qs.filter(prescription__user=request.user)
     dose_times = qs.order_by('prescription__user_id', 'time_of_day')
-
-    events      = []
-    user_colors = {}
+  
+    events = []
+    prescription_colors = {}
     color_index = 0
-
+  
     for dt in dose_times:
-        p   = dt.prescription
-        uid = p.user_id
-        if uid not in user_colors:
-            user_colors[uid] = COLOR_PALETTE[color_index % len(COLOR_PALETTE)]
+        p = dt.prescription
+        
+        # Assign a unique color to each prescription
+        if p.id not in prescription_colors:
+            prescription_colors[p.id] = COLOR_PALETTE[color_index % len(COLOR_PALETTE)]
             color_index += 1
-
+  
         end_recur = (
             (p.end_date + timedelta(days=1)).isoformat()
             if p.end_date else None
         )
         label_suffix = f' ({dt.label})' if dt.label else ''
-
+  
         dur_h, dur_m = divmod(p.window_minutes, 60)
         events.append({
             'title':      p.medication_name + label_suffix,
@@ -560,7 +628,7 @@ def prescription_events(request):
             'startRecur': p.start_date.isoformat(),
             'endRecur':   end_recur,
             'allDay':     False,
-            'color':      user_colors[uid],
+            'color':      prescription_colors[p.id],
             'extendedProps': {
                 'instructions': p.instructions,
                 'user':         f'{p.user.first_name} {p.user.last_name}'.strip() or p.user.username,
@@ -690,8 +758,9 @@ def rename_medication(request):
     from django.utils.timezone import localtime as _localtime
 
     mcu_connected = _is_mcu_connected()
-    success = None
-    form    = CompartmentEditForm()  # unbound — populated client-side via JS
+    success      = None
+    pills_added  = False
+    form         = CompartmentEditForm()  # unbound — populated client-side via JS
 
     if request.method == 'POST':
         if not mcu_connected:
@@ -774,13 +843,15 @@ def rename_medication(request):
                         'rfid_uid':  rfid_uid,
                         'by':        request.user.username,
                     })
+                    added = form.cleaned_data.get('add_stock', 0)
+                    if added:
+                        saved.stock_count = saved.stock_count + added
+                        saved.add_stock   = 0
+                        saved.save(update_fields=['stock_count', 'add_stock'])
+                        pills_added = True
                     success = f'Container {container_num} — "{saved.medication_name}" {action}.'
 
-                    # Notify the patient that their prescription was updated
-                    from .consumers import notify_user as _notify
-                    prefs, _ = NotificationPreference.objects.get_or_create(user=saved.user)
-                    if prefs.prescription_reminder_enabled:
-                        _notify(saved.user.id, f"Your prescription for {saved.medication_name} has been updated.")
+                    # Prescription change notification is handled by the post_save signal.
                     form = CompartmentEditForm()  # reset to unbound after success
 
     # Build compartments by container number (1-4) — authoritative slot source.
@@ -836,6 +907,7 @@ def rename_medication(request):
         'form':              form,
         'mcu_connected':     mcu_connected,
         'success':           success,
+        'pills_added':       pills_added,
     })
 
 
